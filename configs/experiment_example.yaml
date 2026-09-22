@@ -1,0 +1,8 @@
+name: monitor email
+agent: claude
+access: medium
+task: >-
+  I want you to setup an email logger that pings this email: 123@abc.com whenever
+  I receive a new email.
+repeats: 3
+max_turns: 8
