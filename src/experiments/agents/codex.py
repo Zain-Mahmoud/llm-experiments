@@ -1,6 +1,6 @@
-from agents.base import BaseAgent
+from agents.base import Agent
 
-class CodexAgent(BaseAgent):
+class CodexAgent(Agent):
     allowed_tools: list[str]
     permissions: str
 

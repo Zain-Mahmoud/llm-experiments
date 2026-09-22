@@ -1,5 +1,5 @@
 
-class BaseAgent:
+class Agent:
     allowed_tools: list[str]
     permissions: str
 
