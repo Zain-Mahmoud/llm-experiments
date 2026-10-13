@@ -1,1 +1,11 @@
-__pycache__
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Experiment runs are data, not source. Keep the directory itself.
+runs/*
+!runs/.gitkeep
+
+# OS / editor
+.DS_Store
