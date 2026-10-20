@@ -1,10 +1,3 @@
-"""Run storage, event log, metrics and lifecycle.
-
-A run lives in ``runs/<run-id>/``. The event log (``events.jsonl``) is
-append-only and written by the agent's hooks plus the human; every measurement
-is derived from that log and the agent transcript.
-"""
-
 from __future__ import annotations
 
 import json
@@ -28,9 +21,6 @@ FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "str_replace_editor"
 RunStatus = Literal["initialized", "running", "finished", "aborted"]
 
 
-# --------------------------------------------------------------------------- #
-# time and paths
-# --------------------------------------------------------------------------- #
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -75,9 +65,7 @@ def resolve_run(identifier: str, repo_root: str | Path | None = None) -> Path:
     return runs_dir(repo_root) / resolve_run_id(identifier, repo_root)
 
 
-# --------------------------------------------------------------------------- #
-# json / jsonl
-# --------------------------------------------------------------------------- #
+
 def write_json(path: str | Path, obj: Any) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,9 +99,6 @@ def read_jsonl(path: str | Path) -> list[dict]:
     ]
 
 
-# --------------------------------------------------------------------------- #
-# models
-# --------------------------------------------------------------------------- #
 class RunManifest(BaseModel):
     """Persisted to ``runs/<id>/run.json``."""
 
@@ -228,9 +213,7 @@ class Metrics(BaseModel):
     generated_at: str = Field(default_factory=iso)
 
 
-# --------------------------------------------------------------------------- #
-# events
-# --------------------------------------------------------------------------- #
+
 def load_events(run_dir: str | Path) -> list[Event]:
     return [Event.model_validate(r) for r in read_jsonl(Path(run_dir) / "events.jsonl")]
 
@@ -250,9 +233,6 @@ def append_note(run_dir: str | Path, kind: str, text: str, data: dict | None = N
     )
 
 
-# --------------------------------------------------------------------------- #
-# metrics
-# --------------------------------------------------------------------------- #
 def _parse_ts(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
 

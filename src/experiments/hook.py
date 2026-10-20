@@ -1,11 +1,4 @@
 #!/usr/bin/env python
-"""Hook forwarder.
-
-Invoked by the agent's lifecycle hooks. Reads the hook payload as JSON on stdin
-and appends one event to ``<run-dir>/events.jsonl``. Standalone (stdlib only) so
-it stays cheap and never pulls the harness into the agent's process.
-"""
-
 from __future__ import annotations
 
 import argparse

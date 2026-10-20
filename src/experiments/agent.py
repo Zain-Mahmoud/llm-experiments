@@ -1,9 +1,3 @@
-"""Per-agent integration: where hooks live, how to write them, how to launch.
-
-Two agents are supported, Claude Code and Codex. Each is a few module-level
-functions; there is no shared class.
-"""
-
 from __future__ import annotations
 
 import importlib.util
@@ -100,12 +94,12 @@ def hook_config(agent: str, run_dir: str | Path) -> dict:
     events = CODEX_HOOK_EVENTS if agent == "codex" else CLAUDE_HOOK_EVENTS
     tool_events = CODEX_TOOL_EVENTS if agent == "codex" else CLAUDE_TOOL_EVENTS
     command = (
-        f"{shlex.quote(sys.executable)} {shlex.quote(str(HOOK_SCRIPT))} "
+        f"python3 {shlex.quote(str(HOOK_SCRIPT))} "
         f"--run-dir {shlex.quote(str(run_dir))} --source {agent}"
     )
     hooks = {}
     for event in events:
-        group: dict = {"hooks": [{"type": "command", "command": command, "timeout": 30}]}
+        group = {"hooks": [{"type": "command", "command": command, "timeout": 30}]}
         if event in tool_events:
             group["matcher"] = "*"
         hooks[event] = [group]
