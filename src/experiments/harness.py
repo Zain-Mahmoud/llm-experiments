@@ -29,16 +29,8 @@ def iso(ts: datetime | None = None) -> str:
     return (ts or utcnow()).astimezone(timezone.utc).isoformat()
 
 
-def find_repo_root(start: str | Path | None = None) -> Path:
-    cur = Path(start or Path.cwd()).resolve()
-    for candidate in (cur, *cur.parents):
-        if (candidate / "pyproject.toml").is_file():
-            return candidate
-    return cur
-
-
-def runs_dir(repo_root: str | Path | None = None) -> Path:
-    return Path(repo_root or find_repo_root()) / RUNS_DIRNAME
+def runs_dir() -> Path:
+    return Path.cwd() / RUNS_DIRNAME
 
 
 def slugify(text: str) -> str:
@@ -53,16 +45,16 @@ def new_run_id(name: str) -> str:
     return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{slugify(name)}"
 
 
-def resolve_run_id(identifier: str, repo_root: str | Path | None = None) -> str:
-    root = runs_dir(repo_root)
+def resolve_run_id(identifier: str) -> str:
+    root = runs_dir()
     if identifier == "latest":
         candidates = sorted(p.name for p in root.iterdir() if (p / "run.json").exists())
         return candidates[-1]
     return identifier
 
 
-def resolve_run(identifier: str, repo_root: str | Path | None = None) -> Path:
-    return runs_dir(repo_root) / resolve_run_id(identifier, repo_root)
+def resolve_run(identifier: str) -> Path:
+    return runs_dir() / resolve_run_id(identifier)
 
 
 
@@ -106,10 +98,7 @@ class RunManifest(BaseModel):
     name: str
     agent: str
     access: str
-    isolation: str = "worktree"
-    source_workspace: str | None = None
     workspace: str
-    repo_root: str
     run_dir: str
 
     hook_settings_path: str | None = None
@@ -581,42 +570,34 @@ def save_manifest(manifest: RunManifest) -> None:
 def create_run(
     *,
     agent: str = "claude",
-    workspace: str | None = None,
-    isolation: str = "worktree",
     access: str = "medium",
     name: str | None = None,
-    repo_root: str | Path | None = None,
 ) -> RunManifest:
-    """Prepare a run: workspace, hooks, launch command. Never launches anything."""
-    repo_root = Path(repo_root) if repo_root else find_repo_root()
-    if name:
-        run_name = name
-    elif workspace:
-        run_name = Path(workspace).expanduser().resolve().name
-    else:
-        run_name = agent
-    run_dir = runs_dir(repo_root) / new_run_id(run_name)
+    """Prepare a run in the current directory: hooks and a launch command.
+
+    The agent works in the directory the harness was launched from; the harness
+    never launches anything itself.
+    """
+    workspace = Path.cwd()
+    run_name = name or workspace.name or agent
+    run_dir = runs_dir() / new_run_id(run_name)
     run_dir.mkdir(parents=True)
-    workspace_path = _prepare_workspace(workspace, isolation, run_dir)
 
     manifest = RunManifest(
         run_id=run_dir.name,
         name=run_name,
         agent=agent,
         access=access,
-        isolation=isolation,
-        source_workspace=str(Path(workspace).expanduser().resolve()) if workspace else None,
-        workspace=str(workspace_path),
-        repo_root=str(repo_root),
+        workspace=str(workspace),
         run_dir=str(run_dir),
     )
     _install_hooks(manifest)
 
-    manifest.launch_command = launch_command(manifest, workspace_path)
+    manifest.launch_command = launch_command(manifest, workspace)
     script = run_dir / "launch.sh"
     script.write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n"
-        f"cd {shlex.quote(str(workspace_path))}\nexec {manifest.launch_command}\n",
+        f"cd {shlex.quote(str(workspace))}\nexec {manifest.launch_command}\n",
         encoding="utf-8",
     )
     script.chmod(0o755)
@@ -624,23 +605,6 @@ def create_run(
 
     save_manifest(manifest)
     return manifest
-
-
-def _prepare_workspace(source: str | None, isolation: str, run_dir: Path) -> Path:
-    if source is None:
-        workspace = run_dir / "workspace"
-        workspace.mkdir(parents=True)
-        return workspace
-
-    target = Path(source).expanduser().resolve()
-    workspace = run_dir / "workspace"
-    if isolation == "none":
-        return target
-    if isolation == "worktree" and _is_git_repo(target):
-        _run(["git", "-C", str(target), "worktree", "add", "--detach", str(workspace)])
-    else:
-        shutil.copytree(target, workspace)
-    return workspace
 
 
 def _is_git_repo(path: Path) -> bool:
@@ -689,22 +653,23 @@ def git_diff(workspace: str | Path, run_dir: str | Path) -> DiffStats:
         return DiffStats(is_git=False)
 
     stats = DiffStats(is_git=True)
-    numstat = _run(["git", "-C", str(workspace), "diff", "--numstat"]).stdout
+    pathspec = ["--", ".", f":(exclude){RUNS_DIRNAME}"]
+    numstat = _run(["git", "-C", str(workspace), "diff", "--numstat", *pathspec]).stdout
     for line in numstat.splitlines():
         insertions, deletions, *_ = line.split("\t")
         stats.files_changed += 1
         stats.insertions += int(insertions)
         stats.deletions += int(deletions)
 
-    status = _run(["git", "-C", str(workspace), "status", "--porcelain"]).stdout
+    status = _run(["git", "-C", str(workspace), "status", "--porcelain", *pathspec]).stdout
     stats.untracked = sum(1 for line in status.splitlines() if line.startswith("??"))
 
-    patch = _run(["git", "-C", str(workspace), "diff", "--no-color"]).stdout
+    patch = _run(["git", "-C", str(workspace), "diff", "--no-color", *pathspec]).stdout
     if patch:
         (run_dir / "diff.patch").write_text(patch, encoding="utf-8")
         stats.patch_path = str(run_dir / "diff.patch")
 
-    stat_text = _run(["git", "-C", str(workspace), "diff", "--stat"]).stdout
+    stat_text = _run(["git", "-C", str(workspace), "diff", "--stat", *pathspec]).stdout
     if stat_text:
         (run_dir / "diff.stat.txt").write_text(stat_text, encoding="utf-8")
         stats.stat_path = str(run_dir / "diff.stat.txt")
@@ -730,13 +695,8 @@ def build_metrics(run_dir: str | Path, diff: DiffStats | None = None) -> Metrics
     return compute_metrics(manifest, events, entries, diff=diff, transcript_path=transcript)
 
 
-def finalize_run(
-    identifier: str,
-    *,
-    repo_root: str | Path | None = None,
-    capture_diff: bool = True,
-) -> Metrics:
-    run_dir = resolve_run(identifier, repo_root)
+def finalize_run(identifier: str, *, capture_diff: bool = True) -> Metrics:
+    run_dir = resolve_run(identifier)
     manifest = load_manifest(run_dir)
 
     # Restore hooks first so harness artifacts do not show up in the diff.

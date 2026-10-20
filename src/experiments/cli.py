@@ -25,7 +25,6 @@ from .harness import (
     build_metrics,
     create_run,
     finalize_run,
-    find_repo_root,
     load_manifest,
     resolve_run,
     runs_dir,
@@ -54,15 +53,10 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Human-in-the-loop harness for LLM agent experiments.",
     )
     parser.add_argument("--version", action="version", version=f"harness {__version__}")
-    parser.add_argument("--repo-root", default=None, help="Harness project root (auto-detected).")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("init", help="Prepare a run: workspace, hooks, manifest.")
+    p = sub.add_parser("init", help="Prepare a run: hooks, manifest, launch command.")
     p.add_argument("--agent", choices=["claude", "codex"], default="claude")
-    p.add_argument("--workspace", default=None, help="Repo/dir the agent works in.")
-    p.add_argument(
-        "--isolation", choices=["worktree", "copy", "none"], default="worktree"
-    )
     p.add_argument("--access", choices=["low", "medium", "high"], default="medium")
     p.add_argument("--count", type=int, default=1, help="Create N runs.")
     p.add_argument("--no-watch", action="store_true", help="Don't start the background watcher.")
@@ -120,21 +114,10 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _repo_root(args) -> Path:
-    return Path(args.repo_root) if args.repo_root else find_repo_root()
-
-
 def _cmd_init(args) -> int:
-    repo_root = _repo_root(args)
     created = []
     for _ in range(args.count):
-        manifest = create_run(
-            agent=args.agent,
-            workspace=args.workspace,
-            isolation=args.isolation,
-            access=args.access,
-            repo_root=repo_root,
-        )
+        manifest = create_run(agent=args.agent, access=args.access)
         if not args.no_watch:
             spawn_watcher(manifest.run_dir)
         created.append(manifest)
@@ -167,7 +150,7 @@ def _print_run_banner(manifest) -> None:
 
 
 def _cmd_list(args) -> int:
-    root = runs_dir(_repo_root(args))
+    root = runs_dir()
     rows = sorted(p for p in root.iterdir() if (p / "run.json").exists())
     if not rows:
         print("(no runs)")
@@ -189,7 +172,7 @@ def _cmd_list(args) -> int:
 
 
 def _cmd_show(args) -> int:
-    manifest = load_manifest(resolve_run(args.run, _repo_root(args)))
+    manifest = load_manifest(resolve_run(args.run))
     if args.json:
         print(json.dumps(manifest.model_dump(mode="json"), indent=2))
         return 0
@@ -205,14 +188,14 @@ def _cmd_show(args) -> int:
 
 
 def _cmd_path(args) -> int:
-    manifest = load_manifest(resolve_run(args.run, _repo_root(args)))
+    manifest = load_manifest(resolve_run(args.run))
     print(f"run_dir   {manifest.run_dir}")
     print(f"workspace {manifest.workspace}")
     return 0
 
 
 def _cmd_status(args) -> int:
-    run_dir = resolve_run(args.run, _repo_root(args))
+    run_dir = resolve_run(args.run)
     metrics = build_metrics(run_dir)
     write_metrics(run_dir, metrics)
     if args.json:
@@ -223,19 +206,19 @@ def _cmd_status(args) -> int:
 
 
 def _cmd_watch(args) -> int:
-    _watch(resolve_run(args.run, _repo_root(args)), interval=args.interval, quiet=args.quiet)
+    _watch(resolve_run(args.run), interval=args.interval, quiet=args.quiet)
     return 0
 
 
 def _cmd_note(args) -> int:
-    run_dir = resolve_run(args.run, _repo_root(args))
+    run_dir = resolve_run(args.run)
     append_note(run_dir, args.kind, args.text)
     print(f"recorded {args.kind} on {run_dir.name}")
     return 0
 
 
 def _cmd_score(args) -> int:
-    run_dir = resolve_run(args.run, _repo_root(args))
+    run_dir = resolve_run(args.run)
     append_note(
         run_dir, "score", args.item, {"item": args.item, "value": args.value, "note": args.note}
     )
@@ -244,11 +227,9 @@ def _cmd_score(args) -> int:
 
 
 def _cmd_finalize(args) -> int:
-    run_dir = resolve_run(args.run, _repo_root(args))
+    run_dir = resolve_run(args.run)
     stop_watcher(run_dir)
-    metrics = finalize_run(
-        run_dir.name, repo_root=_repo_root(args), capture_diff=not args.no_diff
-    )
+    metrics = finalize_run(run_dir.name, capture_diff=not args.no_diff)
     print(f"finalized {metrics.run_id}")
     print(f"  metrics  {run_dir / 'metrics.json'}")
     print(f"  summary  {run_dir / 'summary.md'}")
@@ -258,11 +239,9 @@ def _cmd_finalize(args) -> int:
 
 
 def _cmd_doctor(args) -> int:
-    root = _repo_root(args)
     print(f"harness  {__version__}")
     print(f"python   {sys.executable}")
-    print(f"repo     {root}")
-    print(f"runs     {runs_dir(root)}")
+    print(f"runs     {runs_dir()}")
     print()
     for name in ("claude", "codex"):
         print(f"{name:<8} {resolve_binary(name) or 'NOT FOUND'}")
