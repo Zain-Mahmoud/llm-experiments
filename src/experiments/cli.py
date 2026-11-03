@@ -20,6 +20,9 @@ from pathlib import Path
 
 from . import __version__
 from .agent import resolve_binary
+from .annotate import open_page
+from .capture import write_record
+from .chatgpt_share import import_share_link, is_share_url
 from .harness import (
     append_note,
     build_metrics,
@@ -33,6 +36,8 @@ from .harness import (
     summary_markdown,
     write_metrics,
 )
+from .importer import create_imported_run, turn_warnings, write_imported_run
+from .record import Experiment
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
-    except FileNotFoundError as exc:
+    except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
@@ -60,7 +65,24 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--access", choices=["low", "medium", "high"], default="medium")
     p.add_argument("--count", type=int, default=1, help="Create N runs.")
     p.add_argument("--no-watch", action="store_true", help="Don't start the background watcher.")
+    _add_experiment_flags(p)
     p.set_defaults(handler=_cmd_init)
+
+    p = sub.add_parser(
+        "import",
+        help="Make a record from a ChatGPT share link (--url alone) or from transcript text (a file, or - for stdin).",
+    )
+    p.add_argument("source", nargs="?", help="Transcript file, or - for stdin. Omit when giving a ChatGPT --url.")
+    p.add_argument("--platform", help="Where text came from, e.g. chatgpt, claude.ai, gemini.")
+    p.add_argument("--model", help="Model name as shown by the platform.")
+    p.add_argument("--url", help="Public share link. Alone, it is fetched (ChatGPT only); with a file, it is recorded.")
+    _add_experiment_flags(p)
+    p.set_defaults(handler=_cmd_import)
+
+    p = sub.add_parser("annotate", help="Open the annotation page for a run, preloaded.")
+    p.add_argument("run")
+    p.add_argument("--no-open", action="store_true", help="Write the page but don't open a browser.")
+    p.set_defaults(handler=_cmd_annotate)
 
     p = sub.add_parser("list", help="List runs.")
     p.set_defaults(handler=_cmd_list)
@@ -103,7 +125,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("-n", "--note", default=None)
     p.set_defaults(handler=_cmd_score)
 
-    p = sub.add_parser("finalize", help="Compute final metrics and restore hooks.")
+    p = sub.add_parser("finalize", help="Compute final metrics, write the record, restore hooks.")
     p.add_argument("run")
     p.add_argument("--no-diff", action="store_true")
     p.set_defaults(handler=_cmd_finalize)
@@ -114,10 +136,68 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_experiment_flags(parser) -> None:
+    # experiment design fields (scenario, framing, ...) come straight from the record model
+    for field in Experiment.model_fields:
+        parser.add_argument(f"--{field}", help=f"Experiment {field}, stored in the record.")
+
+
+def _experiment_from(args) -> dict[str, str]:
+    return {f: getattr(args, f) for f in Experiment.model_fields if getattr(args, f)}
+
+
+def _cmd_import(args) -> int:
+    title = ""
+    if args.source is None:
+        if not args.url:
+            raise ValueError("give a transcript file (or - for stdin), or a ChatGPT share link with --url")
+        if not is_share_url(args.url):
+            raise ValueError(
+                "only ChatGPT share links can be fetched so far. For other platforms copy the chat "
+                f"text into a file and run: harness import FILE --platform NAME --url {args.url}"
+            )
+        record, name, snapshot, title = import_share_link(args.url, _experiment_from(args))
+        run_dir = write_imported_run(record, name, snapshot)
+    else:
+        text = sys.stdin.read() if args.source == "-" else Path(args.source).read_text(encoding="utf-8-sig")
+        run_dir, record = create_imported_run(
+            text,
+            experiment=_experiment_from(args),
+            platform=args.platform,
+            model=args.model,
+            url=args.url,
+        )
+    print(f"imported {run_dir.name} ({len(record.turns)} turns)")
+    if title:
+        print(f"  title    {title}")
+    print(f"  record   {run_dir / 'record.json'}")
+    print(f"  roles    {' '.join(t.role[0].upper() for t in record.turns)}   (U = user, A = assistant)")
+    calls = sum(len(t.tool_calls or []) for t in record.turns)
+    if calls:
+        print(f"  tools    {calls} tool calls (names only; inputs and outputs are not shown by the source)")
+    for warning in turn_warnings(record):
+        print(f"  warning: {warning}")
+    unavailable = [k for k, v in record.provenance.items() if v == "unavailable"]
+    if unavailable:
+        print(f"  not available from this source: {', '.join(unavailable)}")
+    if not record.experiment.scenario:
+        print("  warning: no scenario set (pass --scenario)")
+    print(f"Annotate with:  harness annotate {run_dir.name}")
+    return 0
+
+
+def _cmd_annotate(args) -> int:
+    page = open_page(resolve_run(args.run), show=not args.no_open)
+    print(f"annotation page: {page}")
+    print("Export there saves annotations.json; put it in this run's folder to keep it.")
+    return 0
+
+
 def _cmd_init(args) -> int:
     created = []
+    experiment = _experiment_from(args)
     for _ in range(args.count):
-        manifest = create_run(agent=args.agent, access=args.access)
+        manifest = create_run(agent=args.agent, access=args.access, experiment=experiment)
         if not args.no_watch:
             spawn_watcher(manifest.run_dir)
         created.append(manifest)
@@ -226,11 +306,22 @@ def _cmd_score(args) -> int:
     return 0
 
 
+def _report_record(run_dir: Path, record) -> None:
+    print(f"wrote {run_dir / 'record.json'} ({len(record.turns)} turns)")
+    unavailable = [k for k, v in record.provenance.items() if v == "unavailable"]
+    if unavailable:
+        print(f"  not available from this source: {', '.join(unavailable)}")
+    if not record.experiment.scenario:
+        print("  warning: no scenario set (pass --scenario to `harness init`)")
+
+
 def _cmd_finalize(args) -> int:
     run_dir = resolve_run(args.run)
     stop_watcher(run_dir)
     metrics = finalize_run(run_dir.name, capture_diff=not args.no_diff)
+    record = write_record(run_dir)
     print(f"finalized {metrics.run_id}")
+    _report_record(run_dir, record)
     print(f"  metrics  {run_dir / 'metrics.json'}")
     print(f"  summary  {run_dir / 'summary.md'}")
     if metrics.diff and metrics.diff.patch_path:

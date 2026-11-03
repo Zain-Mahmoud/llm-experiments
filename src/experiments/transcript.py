@@ -78,13 +78,22 @@ def parse_entry(obj: dict[str, Any]) -> Entry:
     blocks = _blocks(content)
     kind = obj.get("type") or "other"
     has_tool_result = any(b.get("type") == "tool_result" for b in blocks)
+    text = _stringify(content)
+    # A "user" entry is not always a human prompt: tool results, injected/meta
+    # messages, subagent traffic and interrupt markers are all written as user entries.
+    human = not (
+        has_tool_result
+        or obj.get("isMeta")
+        or obj.get("isSidechain")
+        or text.startswith("[Request interrupted")
+    )
     entry = Entry(
         kind=kind,
         timestamp=obj.get("timestamp"),
         model=message.get("model"),
-        text=_stringify(content),
+        text=text,
         usage=TokenUsage.from_dict(message.get("usage") or obj.get("usage")),
-        is_prompt=kind == "user" and not has_tool_result,
+        is_prompt=kind == "user" and human,
     )
     for block in blocks:
         if block.get("type") == "tool_use":
