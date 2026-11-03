@@ -17,6 +17,7 @@ from .agent import hook_config, hook_settings_path, launch_command
 from .transcript import TokenUsage, parse_transcript, summarize
 
 RUNS_DIRNAME = "runs"
+TRANSCRIPT_SNAPSHOT = "transcript.jsonl"  # copy of the agent's transcript kept in the run dir
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "str_replace_editor"}
 RunStatus = Literal["initialized", "running", "finished", "aborted"]
 
@@ -43,6 +44,20 @@ def slugify(text: str) -> str:
 
 def new_run_id(name: str) -> str:
     return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{slugify(name)}"
+
+
+def make_run_dir(name: str) -> Path:
+    """Create a fresh ``runs/<id>/``. Ids only have one-second resolution, so a second
+    run started in the same second gets a ``-2``, ``-3`` ... suffix instead of failing."""
+    base = new_run_id(name)
+    for attempt in range(1, 1000):
+        run_dir = runs_dir() / (base if attempt == 1 else f"{base}-{attempt}")
+        try:
+            run_dir.mkdir(parents=True)
+            return run_dir
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"could not create a unique run directory for {base}")
 
 
 def resolve_run_id(identifier: str) -> str:
@@ -100,6 +115,11 @@ class RunManifest(BaseModel):
     access: str
     workspace: str
     run_dir: str
+    # Experiment design fields given to `init` (scenario, framing, ...); the
+    # allowed keys are the fields of record.Experiment.
+    experiment: dict[str, str] = Field(default_factory=dict)
+    # "hooks": captured live from an agent; "import": built from a transcript by `harness import`.
+    source_kind: Literal["hooks", "import"] = "hooks"
 
     hook_settings_path: str | None = None
     hook_backup_path: str | None = None
@@ -148,6 +168,9 @@ class Turn(BaseModel):
     duration_ms: float | None = None
     tool_calls: int = 0
     tokens: TokenUsage = Field(default_factory=TokenUsage)
+    # In memory only (kept out of metrics.json); capture.py builds the record from these.
+    response: str = Field(default="", exclude=True)
+    calls: list[ToolCall] = Field(default_factory=list, exclude=True)
 
 
 class DiffStats(BaseModel):
@@ -321,6 +344,7 @@ def _transcript_turns(entries) -> list[dict]:
                 "started": entry.timestamp,
                 "ended": None,
                 "tokens": TokenUsage(),
+                "response": [],
             }
             turns.append(current)
         elif entry.kind == "assistant":
@@ -330,24 +354,27 @@ def _transcript_turns(entries) -> list[dict]:
                     "started": entry.timestamp,
                     "ended": None,
                     "tokens": TokenUsage(),
+                    "response": [],
                 }
                 turns.append(current)
             current["tokens"] = current["tokens"] + entry.usage
             current["ended"] = entry.timestamp or current["ended"]
+            if entry.text.strip():
+                current["response"].append(entry.text.strip())
     return turns
 
 
-def _calls_in_range(tool_calls: list[ToolCall], start: str | None, end: str | None) -> int:
+def _calls_in_range(tool_calls: list[ToolCall], start: str | None, end: str | None) -> list[ToolCall]:
     s = _parse_ts(start)
     if s is None:
-        return 0
+        return []
     e = _parse_ts(end)
-    count = 0
+    calls = []
     for call in tool_calls:
         t = _parse_ts(call.started_at)
         if t and t >= s and (e is None or t <= e):
-            count += 1
-    return count
+            calls.append(call)
+    return calls
 
 
 def _build_turns(events: list[Event], entries, tool_calls: list[ToolCall]) -> list[Turn]:
@@ -357,9 +384,17 @@ def _build_turns(events: list[Event], entries, tool_calls: list[ToolCall]) -> li
     transcript_turns = _transcript_turns(entries)
     records: list[Turn] = []
     for i, turn in enumerate(base):
+        matched = transcript_turns[i] if i < len(transcript_turns) else None
         tokens = turn.get("tokens")
         if tokens is None:
-            tokens = transcript_turns[i]["tokens"] if i < len(transcript_turns) else TokenUsage()
+            tokens = matched["tokens"] if matched else TokenUsage()
+        response = turn.get("response")
+        if response is None:
+            response = matched["response"] if matched else []
+        # A turn with no end (interrupted, or followed straight away by another
+        # prompt) stops where the next turn starts, so calls are never counted twice.
+        end = turn["ended"] or (base[i + 1]["started"] if i + 1 < len(base) else None)
+        calls = _calls_in_range(tool_calls, turn["started"], end)
         records.append(
             Turn(
                 index=i + 1,
@@ -367,8 +402,10 @@ def _build_turns(events: list[Event], entries, tool_calls: list[ToolCall]) -> li
                 started_at=turn["started"],
                 ended_at=turn["ended"],
                 duration_ms=_ms(turn["started"], turn["ended"]),
-                tool_calls=_calls_in_range(tool_calls, turn["started"], turn["ended"]),
+                tool_calls=len(calls),
                 tokens=tokens,
+                response="\n\n".join(response),
+                calls=calls,
             )
         )
     return records
@@ -572,6 +609,7 @@ def create_run(
     agent: str = "claude",
     access: str = "medium",
     name: str | None = None,
+    experiment: dict[str, str] | None = None,
 ) -> RunManifest:
     """Prepare a run in the current directory: hooks and a launch command.
 
@@ -580,8 +618,7 @@ def create_run(
     """
     workspace = Path.cwd()
     run_name = name or workspace.name or agent
-    run_dir = runs_dir() / new_run_id(run_name)
-    run_dir.mkdir(parents=True)
+    run_dir = make_run_dir(run_name)
 
     manifest = RunManifest(
         run_id=run_dir.name,
@@ -590,6 +627,7 @@ def create_run(
         access=access,
         workspace=str(workspace),
         run_dir=str(run_dir),
+        experiment=experiment or {},
     )
     _install_hooks(manifest)
 
@@ -677,13 +715,15 @@ def git_diff(workspace: str | Path, run_dir: str | Path) -> DiffStats:
 
 
 def _transcript_path(manifest: RunManifest, events: list[Event]) -> str | None:
-    if manifest.transcript_path:
-        return manifest.transcript_path
-    for ev in events:
-        path = ev.payload.get("transcript_path")
-        if path:
-            return str(path)
-    return None
+    path = manifest.transcript_path or next(
+        (str(ev.payload["transcript_path"]) for ev in events if ev.payload.get("transcript_path")),
+        None,
+    )
+    # The agent's own copy can be rotated or deleted; fall back to the snapshot kept in the run.
+    snapshot = Path(manifest.run_dir) / TRANSCRIPT_SNAPSHOT
+    if (not path or not Path(path).is_file()) and snapshot.is_file():
+        return str(snapshot)
+    return path
 
 
 def build_metrics(run_dir: str | Path, diff: DiffStats | None = None) -> Metrics:
@@ -691,7 +731,7 @@ def build_metrics(run_dir: str | Path, diff: DiffStats | None = None) -> Metrics
     manifest = load_manifest(run_dir)
     events = load_events(run_dir)
     transcript = _transcript_path(manifest, events)
-    entries = parse_transcript(transcript) if transcript else []
+    entries = parse_transcript(transcript) if transcript and Path(transcript).is_file() else []
     return compute_metrics(manifest, events, entries, diff=diff, transcript_path=transcript)
 
 

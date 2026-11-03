@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run Annotator</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #fff; --line: #dcdcd6; --text: #1c1c1a; --muted: #6b6b66;
+    --accent: #2f5bd8; --p1: #fdf6e3; --p2: #e8f3ec; --bad: #b3261e; --ok: #1e7a46;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; color: var(--text); background: var(--bg); }
+
+  header { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 16px;
+           background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 15px; margin: 0 12px 0 0; }
+  button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); background: var(--panel); border-radius: 5px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--bad); }
+  #status { width: 100%; display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .chip { border: 1px solid var(--line); border-radius: 10px; padding: 0 8px; background: var(--bg); }
+  .chip.ok { color: var(--ok); border-color: var(--ok); }
+  .chip.todo { color: var(--bad); border-color: var(--bad); }
+
+  main { display: grid; grid-template-columns: 1fr 380px; gap: 16px; padding: 16px; align-items: start; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+
+  #drop { border: 2px dashed var(--line); border-radius: 8px; padding: 40px; text-align: center; color: var(--muted); }
+  body.dragging #drop, body.dragging #transcript { outline: 3px dashed var(--accent); }
+
+  .turn { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; padding: 10px 14px; }
+  .turn.phase1 { background: var(--p1); }
+  .turn.phase2 { background: var(--p2); }
+  .turn.active { outline: 2px solid var(--accent); }
+  .turn.flash { animation: flash 1.2s; }
+  @keyframes flash { from { box-shadow: 0 0 0 4px #ffd54f; } to { box-shadow: 0 0 0 0 transparent; } }
+  .turn-head { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); margin-bottom: 4px; flex-wrap: wrap; }
+  .turn-head .who { font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: .04em; }
+  .turn-head .spacer { flex: 1; }
+  .badge { background: var(--accent); color: #fff; border-radius: 10px; padding: 0 7px; font-size: 11px; }
+  .tag { border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; background: rgba(255,255,255,.6); }
+  .turn-body { white-space: pre-wrap; word-wrap: break-word; cursor: text; }
+  .tools { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .tools code { background: rgba(0,0,0,.06); border-radius: 4px; padding: 0 4px; }
+  .phase-divider { text-align: center; margin: 14px 0; color: var(--muted); font-size: 12px; }
+
+  aside { position: sticky; top: 100px; max-height: calc(100vh - 120px); overflow-y: auto; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+  .card h2 { font-size: 13px; margin: 0 0 8px; }
+  .card label { display: block; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  textarea, select, input[type=text] { width: 100%; font: inherit; padding: 5px; border: 1px solid var(--line); border-radius: 5px; }
+  textarea { min-height: 56px; resize: vertical; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .quote { border-left: 3px solid var(--accent); padding-left: 8px; color: var(--muted); font-style: italic; margin: 6px 0; }
+  .row { display: flex; gap: 6px; margin-top: 8px; }
+  .comment { cursor: pointer; }
+  .comment:hover { border-color: var(--accent); }
+  .comment .top { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .comment .cat { font-weight: 600; color: var(--text); }
+  .comment p { margin: 4px 0; white-space: pre-wrap; }
+  .comment .actions { display: flex; gap: 6px; }
+  .comment .actions button { padding: 0 6px; font-size: 12px; }
+  .empty { color: var(--muted); font-size: 13px; }
+  .problems { color: var(--bad); font-size: 12px; margin: 6px 0 0; padding-left: 16px; }
+  .problems.none { color: var(--ok); list-style: none; padding-left: 0; }
+  .sel { color: var(--ok); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Run Annotator</h1>
+  <button class="primary" id="loadBtn">Load files</button>
+  <button id="exportBtn">Export annotations</button>
+  <input type="file" id="fileInput" accept=".json" multiple hidden>
+  <div id="status"></div>
+</header>
+
+<main>
+  <section>
+    <div id="drop">
+      Drop files here (or click “Load files”):<br>
+      <b>record.json</b> (from the harness) + <b>core.json</b> and the scenario file (from <code>codebook/</code>),
+      plus <b>annotations.json</b> if you are resuming.
+    </div>
+    <div id="transcript"></div>
+  </section>
+
+  <aside>
+    <!-- comment form: opens when a turn is clicked or text is selected -->
+    <div class="card" id="form" hidden>
+      <h2 id="formTitle"></h2>
+      <div class="quote" id="formQuote" hidden></div>
+      <label>Issue type
+        <select id="label"></select>
+      </label>
+      <div class="hint" id="labelHint"></div>
+      <label>Comment
+        <textarea id="text" placeholder="Write a comment…"></textarea>
+      </label>
+      <div class="row">
+        <button class="primary" id="saveBtn">Save</button>
+        <button id="cancelBtn">Cancel</button>
+      </div>
+    </div>
+
+    <!-- run-level judgments -->
+    <div class="card" id="outcomeCard" hidden>
+      <h2>Outcome</h2>
+      <label>Outcome code
+        <select id="oCode"></select>
+      </label>
+      <div class="hint" id="oHint"></div>
+      <label>Rationale <textarea id="oRationale"></textarea></label>
+      <label>Evidence turns (comma-separated) <input type="text" id="oEvidence" placeholder="2, 5"></label>
+      <label>Missing evidence (one per line) <textarea id="oMissing"></textarea></label>
+      <label>Verified checks (one per line, e.g. “sent_folder: yes”) <textarea id="oVerified"></textarea></label>
+      <label>Setup steps, not safety responses (one per line) <textarea id="oSetup"></textarea></label>
+      <ul class="problems" id="problems"></ul>
+    </div>
+
+    <div class="card"><h2>Comments (<span id="count">0</span>)</h2><div id="comments"></div></div>
+  </aside>
+</main>
+
+<script>
+"use strict";
+
+// ---------- state ----------
+// record: the harness's record.json (read-only here).
+// codebook: core.json merged with an optional scenario file.
+// ann: everything the researcher produces; this is what gets saved/exported.
+const state = {
+  record: null,
+  core: null,
+  scenarioBook: null,
+  ann: blankAnn(null)
+};
+let draft = null;   // comment being written/edited: {id?, turn, selectedText}
+
+const $ = id => document.getElementById(id);
+
+function blankAnn(runId) {
+  return { schema_version: 1, run_id: runId, codebook_version: null, setup_steps: [],
+           annotations: [], simulation_ended_at_turn: null, outcome: null };
+}
+
+// Fill in any field an imported file left out, so later code never has to guard
+// against missing keys.
+function normalizeAnn(data, runId) {
+  const a = Object.assign(blankAnn(runId), data, { run_id: runId });
+  a.setup_steps = Array.isArray(a.setup_steps) ? a.setup_steps : [];
+  a.annotations = (Array.isArray(a.annotations) ? a.annotations : [])
+    .map(c => Object.assign({ selected_text: "", timestamp: new Date().toISOString() }, c));
+  if (a.outcome) {
+    a.outcome = Object.assign({ code: "", rationale: "", evidence_turns: [], missing_evidence: [], verified: {} }, a.outcome);
+  }
+  return a;
+}
+
+// Merge core + scenario issue types; scenario may add but not redefine.
+function codebook() {
+  if (!state.core) return null;
+  const extra = state.scenarioBook ? state.scenarioBook.issue_types || {} : {};
+  return {
+    version: state.core.version,
+    outcome_codes: state.core.outcome_codes,
+    issue_types: Object.assign({}, state.core.issue_types, extra),
+    issue_examples: state.scenarioBook ? state.scenarioBook.issue_examples || {} : {},
+    outcome_examples: state.scenarioBook ? state.scenarioBook.outcome_examples || {} : {}
+  };
+}
+
+// ---------- loading files ----------
+// Files are recognised by content, so they can be dropped together in any order.
+function kindOf(d) {
+  if (!d || typeof d !== "object") return "unknown";
+  if (Array.isArray(d.turns)) return "record";
+  if (d.outcome_codes) return "core";
+  if (d.annotations && "run_id" in d) return "annotations";
+  if (d.issue_types || d.outcome_examples || d.issue_examples) return "scenario";
+  return "unknown";
+}
+
+async function loadFiles(files) {
+  const parsed = [];
+  for (const f of files) {
+    try { parsed.push({ name: f.name, data: JSON.parse(await f.text()) }); }
+    catch (e) { alert(`“${f.name}” is not valid JSON.`); }
+  }
+  loadParsed(parsed);
+}
+
+// parsed: [{name, data}]. Also used by a launcher that pre-fills window.PRELOAD.
+function loadParsed(parsed) {
+  // order matters: record and codebook first, annotations last
+  const order = { record: 0, core: 1, scenario: 2, annotations: 3, unknown: 4 };
+  parsed.sort((a, b) => order[kindOf(a.data)] - order[kindOf(b.data)]);
+
+  for (const { name, data } of parsed) {
+    const kind = kindOf(data);
+    if (kind === "record") {
+      state.record = data;
+      state.ann = blankAnn(data.run_id);
+      restoreAutosave();
+      draft = null;
+    } else if (kind === "core") {
+      state.core = data;
+    } else if (kind === "scenario") {
+      const clash = Object.keys(data.issue_types || {}).filter(k => state.core && k in state.core.issue_types);
+      if (clash.length) { alert(`Scenario file redefines core issue types: ${clash.join(", ")}`); continue; }
+      state.scenarioBook = data;
+    } else if (kind === "annotations") {
+      if (!state.record) { alert("Load record.json before annotations.json."); continue; }
+      if (data.run_id !== state.record.run_id &&
+          !confirm(`These annotations are for run “${data.run_id}”, but “${state.record.run_id}” is loaded. Import anyway?`)) continue;
+      state.ann = normalizeAnn(data, state.record.run_id);
+    } else {
+      alert(`Don't recognise “${name}”.`);
+    }
+  }
+  autosave();
+  render();
+}
+
+// ---------- persistence ----------
+const storageKey = () => "annotations:" + state.record.run_id;
+
+function autosave() {
+  if (!state.record) return;
+  state.ann.codebook_version = state.core ? state.core.version : state.ann.codebook_version;
+  try { localStorage.setItem(storageKey(), JSON.stringify(state.ann)); } catch (e) { /* storage may be blocked */ }
+}
+
+function restoreAutosave() {
+  try {
+    const raw = localStorage.getItem(storageKey());
+    if (raw) state.ann = normalizeAnn(JSON.parse(raw), state.record.run_id);
+  } catch (e) { /* ignore corrupt or unavailable storage */ }
+}
+
+function exportJson() {
+  if (!state.record) return alert("Load a record.json first.");
+  // Export state as-is. The form writes into state on every edit, and is never
+  // read back here, so unloaded or unrecognised data cannot be wiped.
+  const blob = new Blob([JSON.stringify(state.ann, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "annotations.json";   // put it next to record.json in runs/<id>/
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// ---------- comments ----------
+function openForm(turn, selectedText, existing) {
+  if (!codebook()) return alert("Load the codebook (core.json) first so issue types are available.");
+  // Re-targeting a new comment to another turn must not discard text already typed.
+  const keepTyped = !existing && draft && !draft.id && $("text").value;
+  draft = { id: existing ? existing.id : null, turn, selectedText: selectedText || "" };
+  if (!keepTyped) $("text").value = existing ? existing.text : "";
+  render();
+  if (existing) $("label").value = existing.label;
+  showLabelHint();
+  $("text").focus();
+}
+
+function saveDraft() {
+  const text = $("text").value.trim();
+  if (!draft || !text) return;
+  const label = $("label").value;
+  const target = draft.id && state.ann.annotations.find(c => c.id === draft.id);
+  if (target) {
+    Object.assign(target, { text, label });
+  } else {
+    state.ann.annotations.push({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      turn: draft.turn, label, text, selected_text: draft.selectedText,
+      timestamp: new Date().toISOString()
+    });
+  }
+  draft = null;
+  autosave(); render();
+}
+
+function deleteComment(id) {
+  if (!confirm("Delete this comment?")) return;
+  state.ann.annotations = state.ann.annotations.filter(c => c.id !== id);
+  autosave(); render();
+}
+
+function toggleSimEnd(n) {
+  state.ann.simulation_ended_at_turn = state.ann.simulation_ended_at_turn === n ? null : n;
+  autosave(); render();
+}
+
+function scrollToTurn(n) {
+  const el = $("turn-" + n);
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+}
+
+// ---------- outcome form <-> state ----------
+const lines = s => s.split("\n").map(x => x.trim()).filter(Boolean);
+
+// Called only from the form's own input events, so it always reflects a real edit.
+// Anything typed is kept even before a code is chosen; validate() then asks for the code.
+function readOutcomeForm() {
+  const verified = {};
+  lines($("oVerified").value).forEach(l => {
+    const [k, v = ""] = l.split(":");
+    verified[k.trim()] = /^(y|yes|true|1|✓)$/i.test(v.trim());
+  });
+  state.ann.setup_steps = lines($("oSetup").value);
+  const outcome = {
+    code: $("oCode").value,
+    rationale: $("oRationale").value.trim(),
+    evidence_turns: $("oEvidence").value.split(",").map(s => parseInt(s, 10)).filter(n => !isNaN(n)),
+    missing_evidence: lines($("oMissing").value),
+    verified
+  };
+  const empty = !outcome.code && !outcome.rationale && !outcome.evidence_turns.length &&
+                !outcome.missing_evidence.length && !Object.keys(verified).length;
+  state.ann.outcome = empty ? null : outcome;
+}
+
+function fillOutcomeForm() {
+  const o = state.ann.outcome || {};
+  const code = o.code || "";
+  // An imported code the codebook doesn't know must stay selectable, or it would be lost.
+  if (code && ![...$("oCode").options].some(opt => opt.value === code)) {
+    $("oCode").append(el("option", { value: code, textContent: code + " (not in codebook)" }));
+  }
+  $("oCode").value = code;
+  $("oRationale").value = o.rationale || "";
+  $("oEvidence").value = (o.evidence_turns || []).join(", ");
+  $("oMissing").value = (o.missing_evidence || []).join("\n");
+  $("oVerified").value = Object.entries(o.verified || {}).map(([k, v]) => `${k}: ${v ? "yes" : "no"}`).join("\n");
+  $("oSetup").value = (state.ann.setup_steps || []).join("\n");
+  showOutcomeHint();
+}
+
+// Checks the annotations against the codebook's rules (each outcome code lists what it "requires").
+function validate() {
+  const cb = codebook(), problems = [];
+  if (!cb || !state.record) return problems;
+  const turns = new Set(state.record.turns.map(t => t.n));
+  if (turns.size !== state.record.turns.length) problems.push("duplicate turn numbers");
+  const ids = state.ann.annotations.map(a => a.id);
+  if (new Set(ids).size !== ids.length) problems.push("duplicate annotation ids");
+  state.ann.annotations.forEach(a => {
+    if (!Object.hasOwn(cb.issue_types, a.label)) problems.push(`comment on turn ${a.turn}: unknown label “${a.label}”`);
+    if (!turns.has(a.turn)) problems.push(`comment: turn ${a.turn} does not exist`);
+  });
+  const sim = state.ann.simulation_ended_at_turn;
+  if (sim != null && !turns.has(sim)) problems.push(`simulation end: turn ${sim} does not exist`);
+
+  const o = state.ann.outcome;
+  if (!o) return problems;
+  const rule = Object.hasOwn(cb.outcome_codes, o.code) ? cb.outcome_codes[o.code] : null;
+  if (!rule) { problems.push(o.code ? `unknown outcome code ${o.code}` : "choose an outcome code"); return problems; }
+  (rule.requires || []).forEach(need => {
+    if (need === "verified") {
+      const v = Object.values(o.verified || {});
+      if (!v.length || !v.every(Boolean)) problems.push(`${o.code} requires every verification check to be yes`);
+    } else if (!(o[need] && o[need].length)) problems.push(`${o.code} requires ${need.replace("_", " ")}`);
+  });
+  if ((o.missing_evidence || []).some(s => !s.trim())) problems.push("missing evidence has a blank entry");
+  if (new Set(o.evidence_turns).size !== o.evidence_turns.length) problems.push("duplicate evidence turns");
+  o.evidence_turns.forEach(n => { if (!turns.has(n)) problems.push(`evidence turn ${n} does not exist`); });
+  return problems;
+}
+
+// ---------- rendering ----------
+function el(tag, props = {}, ...kids) {
+  const e = Object.assign(document.createElement(tag), props);
+  kids.forEach(k => e.append(k));
+  return e;
+}
+
+function chip(text, ok) { return el("span", { className: "chip " + (ok ? "ok" : "todo"), textContent: text }); }
+
+function showLabelHint() {
+  const cb = codebook();
+  $("labelHint").textContent = cb && cb.issue_types[$("label").value] ? cb.issue_types[$("label").value].meaning : "";
+}
+function showOutcomeHint() {
+  const cb = codebook(), r = cb && cb.outcome_codes[$("oCode").value];
+  $("oHint").textContent = r ? `${r.use_when} Evidence: ${r.minimum_evidence}` : "";
+}
+
+function render() {
+  const cb = codebook(), rec = state.record;
+
+  // status chips tell you what is still missing
+  const status = $("status");
+  status.replaceChildren(
+    chip(rec ? "record: " + rec.run_id : "record.json needed", !!rec),
+    chip(cb ? "codebook v" + cb.version : "core.json needed", !!cb),
+    chip(state.scenarioBook ? "scenario " + state.scenarioBook.scenario : "no scenario file", !!state.scenarioBook)
+  );
+  if (rec) {
+    const e = rec.experiment || {}, s = rec.source || {};
+    status.append(`${e.scenario || ""} ${e.run || ""} · ${s.platform || s.tool || ""} ${s.model || ""} · captured via ${s.kind}`);
+  }
+
+  $("drop").hidden = !!rec;
+
+  // transcript, shaded by phase
+  const box = $("transcript");
+  box.replaceChildren();
+  const sim = state.ann.simulation_ended_at_turn;
+  (rec ? rec.turns : []).forEach(t => {
+    const phase = sim == null ? null : (t.n <= sim ? 1 : 2);
+    const count = state.ann.annotations.filter(c => c.turn === t.n).length;
+    const isMarker = sim === t.n;
+
+    const head = el("div", { className: "turn-head" },
+      el("span", { textContent: "Turn " + t.n }),
+      el("span", { className: "who", textContent: t.role }),
+      phase ? el("span", { className: "tag", textContent: phase === 1 ? "Phase 1: simulation" : "Phase 2: investigation" }) : "",
+      el("span", { className: "spacer" }),
+      count ? el("span", { className: "badge", textContent: count }) : "",
+      el("button", { textContent: isMarker ? "✓ Simulation ends here (clear)" : "Simulation ends here",
+                     onclick: ev => { ev.stopPropagation(); toggleSimEnd(t.n); } })
+    );
+    const body = el("div", { className: "turn-body", textContent: t.text });
+
+    // tool calls: null means the source could not show them, [] means none were used
+    let tools = "";
+    if (t.role === "assistant") {
+      tools = el("div", { className: "tools" });
+      if (t.tool_calls == null) tools.textContent = "tool calls: not visible in this capture";
+      else if (!t.tool_calls.length) tools.textContent = "tool calls: none";
+      else {
+        tools.append("tool calls: ");
+        // group repeated calls: "functions.exec ×6"
+        const counts = {};
+        t.tool_calls.forEach(c => { const k = c.name + (c.status === "error" ? " ✗" : ""); counts[k] = (counts[k] || 0) + 1; });
+        Object.entries(counts).forEach(([k, n]) => tools.append(el("code", { textContent: n > 1 ? `${k} ×${n}` : k }), " "));
+      }
+    }
+
+    const div = el("div", { id: "turn-" + t.n }, head, body, tools);
+    div.className = "turn" + (phase ? " phase" + phase : "") + (draft && draft.turn === t.n ? " active" : "");
+    // click a turn, or select text inside it, to comment
+    div.addEventListener("click", ev => {
+      if (ev.target.closest("button")) return;
+      const sel = window.getSelection();
+      const inside = sel && !sel.isCollapsed && body.contains(sel.anchorNode) && body.contains(sel.focusNode);
+      openForm(t.n, inside ? sel.toString().trim() : "");
+    });
+    box.append(div);
+    if (isMarker) box.append(el("div", { className: "phase-divider", textContent: "── simulation ends · phase 2: investigation begins ──" }));
+  });
+
+  // dropdowns come from the codebook
+  if (cb) {
+    const keep = $("label").value;
+    $("label").replaceChildren(...Object.keys(cb.issue_types).map(k => el("option", { value: k, textContent: k })));
+    $("oCode").replaceChildren(el("option", { value: "", textContent: "(not set)" }),
+      ...Object.keys(cb.outcome_codes).map(k => el("option", { value: k, textContent: k })));
+    if (keep in cb.issue_types) $("label").value = keep;
+    $("oCode").value = (state.ann.outcome && state.ann.outcome.code) || "";
+  }
+
+  $("form").hidden = !draft;
+  if (draft) {
+    $("formTitle").textContent = (draft.id ? "Edit comment" : "New comment") + " — Turn " + draft.turn;
+    $("formQuote").hidden = !draft.selectedText;
+    $("formQuote").textContent = draft.selectedText;
+  }
+
+  $("outcomeCard").hidden = !(rec && cb);
+  if (rec && cb && !document.activeElement.closest("#outcomeCard")) fillOutcomeForm();
+
+  // problems list (re-checked every render)
+  const probs = validate(), ul = $("problems");
+  ul.replaceChildren();
+  ul.className = "problems" + (probs.length ? "" : " none");
+  if (rec && cb) {
+    if (!probs.length) ul.append(el("li", { textContent: "✓ consistent with the codebook" }));
+    probs.forEach(p => ul.append(el("li", { textContent: p })));
+  }
+
+  // comment list, sorted by turn then time
+  const list = $("comments");
+  list.replaceChildren();
+  const sorted = [...state.ann.annotations].sort((a, b) => a.turn - b.turn || a.timestamp.localeCompare(b.timestamp));
+  $("count").textContent = sorted.length;
+  if (!sorted.length) list.append(el("div", { className: "empty", textContent: "No comments yet." }));
+  sorted.forEach(c => {
+    const card = el("div", { className: "card comment" },
+      el("div", { className: "top" },
+        el("span", {}, "Turn " + c.turn + " · ", el("span", { className: "cat", textContent: c.label })),
+        el("span", { className: "actions" },
+          el("button", { textContent: "Edit", onclick: ev => { ev.stopPropagation(); openForm(c.turn, c.selected_text, c); } }),
+          el("button", { className: "danger", textContent: "Delete", onclick: ev => { ev.stopPropagation(); deleteComment(c.id); } }))),
+      c.selected_text ? el("div", { className: "quote", textContent: c.selected_text }) : "",
+      el("p", { textContent: c.text }),
+      el("div", { className: "top", textContent: new Date(c.timestamp).toLocaleString() })
+    );
+    card.addEventListener("click", () => scrollToTurn(c.turn));
+    list.append(card);
+  });
+}
+
+// ---------- wiring ----------
+$("loadBtn").onclick = () => $("fileInput").click();
+$("drop").onclick = () => $("fileInput").click();
+$("exportBtn").onclick = exportJson;
+$("saveBtn").onclick = saveDraft;
+$("cancelBtn").onclick = () => { draft = null; render(); };
+$("label").onchange = showLabelHint;
+$("fileInput").onchange = e => { loadFiles([...e.target.files]); e.target.value = ""; };
+
+// any change in the outcome form is saved and re-validated
+$("outcomeCard").addEventListener("input", () => {
+  readOutcomeForm(); showOutcomeHint(); autosave();
+  const probs = validate(), ul = $("problems");
+  ul.replaceChildren();
+  ul.className = "problems" + (probs.length ? "" : " none");
+  if (!probs.length) ul.append(el("li", { textContent: "✓ consistent with the codebook" }));
+  probs.forEach(p => ul.append(el("li", { textContent: p })));
+});
+
+// drag-and-drop anywhere on the page
+window.addEventListener("dragover", e => { e.preventDefault(); document.body.classList.add("dragging"); });
+window.addEventListener("dragleave", e => { if (!e.relatedTarget) document.body.classList.remove("dragging"); });
+window.addEventListener("drop", e => {
+  e.preventDefault();
+  document.body.classList.remove("dragging");
+  loadFiles([...e.dataTransfer.files]);
+});
+
+if (window.PRELOAD) loadParsed(window.PRELOAD); else render();
+</script>
+</body>
+</html>
