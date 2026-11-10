@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .agent import resolve_binary
+from .agent import DESKTOP_APPS, find_app
 from .annotate import open_page
 from .capture import write_record
 from .chatgpt_share import import_share_link, is_share_url
@@ -130,7 +130,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-diff", action="store_true")
     p.set_defaults(handler=_cmd_finalize)
 
-    p = sub.add_parser("doctor", help="Check the environment and agent CLIs.")
+    p = sub.add_parser("doctor", help="Check the environment and the agent desktop apps.")
     p.set_defaults(handler=_cmd_doctor)
 
     return parser
@@ -334,8 +334,8 @@ def _cmd_doctor(args) -> int:
     print(f"python   {sys.executable}")
     print(f"runs     {runs_dir()}")
     print()
-    for name in ("claude", "codex"):
-        print(f"{name:<8} {resolve_binary(name) or 'NOT FOUND'}")
+    for name, bundle_id in DESKTOP_APPS.items():
+        print(f"{name:<8} {find_app(bundle_id) or 'NOT FOUND'}")
     return 0
 
 

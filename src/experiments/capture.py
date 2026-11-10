@@ -14,7 +14,7 @@ from pathlib import Path
 from .harness import TRANSCRIPT_SNAPSHOT, ToolCall, build_metrics, load_events, load_manifest
 from .record import Experiment, Record, Source, ToolCallRecord, TurnRecord, save_record
 
-PLATFORMS = {"claude": "claude-code", "codex": "codex-cli"}
+PLATFORMS = {"claude": "claude-code", "codex": "codex-desktop"}
 
 
 def _tool_call(call: ToolCall) -> ToolCallRecord:

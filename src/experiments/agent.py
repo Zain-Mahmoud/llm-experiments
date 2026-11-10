@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import importlib.util
 import shlex
-import shutil
-import sys
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -65,24 +63,6 @@ CODEX_HOOK_EVENTS = [
 CODEX_TOOL_EVENTS = {"PreToolUse", "PostToolUse", "PermissionRequest"}
 
 
-def resolve_binary(name: str) -> str | None:
-    """Locate an agent CLI on PATH, or in its bundled package in this venv."""
-    found = shutil.which(name)
-    if found:
-        return found
-    package = {"claude": "claude_agent_sdk", "codex": "codex_cli_bin"}.get(name)
-    spec = importlib.util.find_spec(package) if package else None
-    if not spec or not spec.submodule_search_locations:
-        return None
-    pkg_dir = Path(next(iter(spec.submodule_search_locations)))
-    candidates = (
-        [pkg_dir / "_bundled" / name]
-        if name == "claude"
-        else [pkg_dir / "bin" / name, pkg_dir / name]
-    )
-    return next((str(c) for c in candidates if c.is_file()), None)
-
-
 def hook_settings_path(agent: str, workspace: str | Path) -> Path:
     if agent == "codex":
         return Path(workspace) / ".codex" / "hooks.json"
@@ -106,29 +86,39 @@ def hook_config(agent: str, run_dir: str | Path) -> dict:
     return {"hooks": hooks}
 
 
+def codex_config_path(workspace: str | Path) -> Path:
+    return Path(workspace) / ".codex" / "config.toml"
+
+
+def codex_permission_lines(access: str) -> list[str]:
+    """Top-level config.toml keys for the access level. The desktop app takes no
+    flags, so these replace the CLI's --sandbox / --ask-for-approval."""
+    approval = "never" if access == "high" else "on-request"
+    return [
+        f'sandbox_mode = "{CODEX_SANDBOX.get(access, "workspace-write")}"',
+        f'approval_policy = "{approval}"',
+    ]
+
+
+# Bundle ids outlast app names: Codex ships inside the app named "ChatGPT".
+DESKTOP_APPS = {"claude": "com.anthropic.claudefordesktop", "codex": "com.openai.codex"}
+
+
+def find_app(bundle_id: str) -> str | None:
+    """Path of an installed macOS app, found by bundle id through Spotlight."""
+    try:
+        out = subprocess.run(
+            ["mdfind", f"kMDItemCFBundleIdentifier == '{bundle_id}'"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return next((line for line in out.splitlines() if line.endswith(".app")), None)
+
+
 def launch_command(manifest: "RunManifest", workspace: str | Path) -> str:
+    # The desktop apps take no flags: open the workspace folder in the app. The
+    # access level is written to the project config next to the hooks instead.
     if manifest.agent == "codex":
-        return _codex_launch(manifest, workspace)
-    return _claude_launch(manifest, workspace)
-
-
-def _claude_launch(manifest: "RunManifest", workspace: str | Path) -> str:
-    parts = [resolve_binary("claude") or "claude"]
-    parts += ["--permission-mode", CLAUDE_PERMISSION.get(manifest.access, "acceptEdits")]
-    parts += ["--name", manifest.run_id]
-    return " ".join(shlex.quote(p) for p in parts)
-
-
-def _codex_launch(manifest: "RunManifest", workspace: str | Path) -> str:
-    parts = [resolve_binary("codex") or "codex"]
-    if manifest.access == "high":
-        parts.append("--dangerously-bypass-approvals-and-sandbox")
-    else:
-        parts += [
-            "--sandbox",
-            CODEX_SANDBOX.get(manifest.access, "workspace-write"),
-            "--ask-for-approval",
-            "on-request",
-        ]
-    parts += ["-C", str(workspace), "--dangerously-bypass-hook-trust"]
-    return " ".join(shlex.quote(p) for p in parts)
+        return f"open -b {DESKTOP_APPS['codex']}"
+    return "open -a Claude"

@@ -13,7 +13,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .agent import hook_config, hook_settings_path, launch_command
+from .agent import (
+    CLAUDE_PERMISSION,
+    codex_config_path,
+    codex_permission_lines,
+    hook_config,
+    hook_settings_path,
+    launch_command,
+)
 from .transcript import TokenUsage, parse_transcript, summarize
 
 RUNS_DIRNAME = "runs"
@@ -123,6 +130,9 @@ class RunManifest(BaseModel):
 
     hook_settings_path: str | None = None
     hook_backup_path: str | None = None
+    # Codex only: .codex/config.toml, which carries the access level for the app.
+    config_path: str | None = None
+    config_backup_path: str | None = None
 
     launch_command: str | None = None
     launch_script: str | None = None
@@ -340,6 +350,7 @@ def _transcript_turns(entries) -> list[dict]:
     for entry in entries:
         if entry.is_prompt:
             current = {
+                "turn_id": entry.turn_id,
                 "prompt": entry.text.strip(),
                 "started": entry.timestamp,
                 "ended": None,
@@ -347,7 +358,7 @@ def _transcript_turns(entries) -> list[dict]:
                 "response": [],
             }
             turns.append(current)
-        elif entry.kind == "assistant":
+        elif entry.kind in {"assistant", "usage"}:
             if current is None:
                 current = {
                     "prompt": "",
@@ -380,8 +391,13 @@ def _calls_in_range(tool_calls: list[ToolCall], start: str | None, end: str | No
 def _build_turns(events: list[Event], entries, tool_calls: list[ToolCall]) -> list[Turn]:
     # Event log gives structure and timing; the transcript gives per-turn token
     # counts, matched by turn order.
-    base = _event_turns(events) or _transcript_turns(entries)
     transcript_turns = _transcript_turns(entries)
+    # A Codex rollout holds every turn, including any sent before the hooks were
+    # loaded, so it gives the structure; matching by order would misalign them.
+    if any(t.get("turn_id") for t in transcript_turns):
+        base = transcript_turns
+    else:
+        base = _event_turns(events) or transcript_turns
     records: list[Turn] = []
     for i, turn in enumerate(base):
         matched = transcript_turns[i] if i < len(transcript_turns) else None
@@ -471,7 +487,11 @@ def compute_metrics(
         wall_clock_s=(ended - started).total_seconds() if started and ended else None,
         first_action_latency_ms=_first_action(events, tool_calls),
         turns=len(turn_records),
-        human_prompts=sum(1 for e in events if e.kind == "user_prompt"),
+        # a Codex rollout can hold prompts sent before the hooks were loaded
+        human_prompts=max(
+            sum(1 for e in events if e.kind == "user_prompt"),
+            sum(1 for t in turn_records if t.prompt),
+        ),
         assistant_messages=summary["assistant_messages"],
         tokens=tokens,
         tokens_by_model=tokens_by_model,
@@ -671,18 +691,47 @@ def _install_hooks(manifest: RunManifest) -> None:
     hooks = existing.get("hooks") or {}
     hooks.update(hook_config(manifest.agent, manifest.run_dir)["hooks"])
     existing["hooks"] = hooks
+    if manifest.agent != "codex":
+        # The desktop app takes no --permission-mode, but reads it from settings.
+        permissions = existing.get("permissions") or {}
+        permissions["defaultMode"] = CLAUDE_PERMISSION.get(manifest.access, "acceptEdits")
+        existing["permissions"] = permissions
     write_json(settings, existing)
     manifest.hook_settings_path = str(settings)
+    if manifest.agent == "codex":
+        _install_codex_config(manifest)
+
+
+def _install_codex_config(manifest: RunManifest) -> None:
+    config = codex_config_path(manifest.workspace)
+    lines = []
+    if config.exists():
+        backup = Path(manifest.run_dir) / "config.original.toml"
+        shutil.copy2(config, backup)
+        manifest.config_backup_path = str(backup)
+        lines = config.read_text(encoding="utf-8").splitlines()
+    # Drop the user's own top-level sandbox/approval keys (TOML rejects duplicates);
+    # ours go first, before any [table] header, so they stay top-level.
+    ours = codex_permission_lines(manifest.access)
+    keys = {line.split("=")[0].strip() for line in ours}
+    first_table = next((i for i, line in enumerate(lines) if line.lstrip().startswith("[")), len(lines))
+    head = [line for line in lines[:first_table] if line.split("=")[0].strip() not in keys]
+    config.write_text("\n".join(ours + head + lines[first_table:]) + "\n", encoding="utf-8")
+    manifest.config_path = str(config)
+
+
+def _restore_file(path: str | None, backup: str | None) -> None:
+    if not path:
+        return
+    if backup:
+        shutil.copy2(backup, path)
+    elif Path(path).exists():
+        Path(path).unlink()
 
 
 def _restore_hooks(manifest: RunManifest) -> None:
-    if not manifest.hook_settings_path:
-        return
-    settings = Path(manifest.hook_settings_path)
-    if manifest.hook_backup_path:
-        shutil.copy2(manifest.hook_backup_path, settings)
-    elif settings.exists():
-        settings.unlink()
+    _restore_file(manifest.hook_settings_path, manifest.hook_backup_path)
+    _restore_file(manifest.config_path, manifest.config_backup_path)
 
 
 def git_diff(workspace: str | Path, run_dir: str | Path) -> DiffStats:
@@ -776,5 +825,8 @@ def spawn_watcher(run_dir: str | Path) -> int:
 def stop_watcher(run_dir: str | Path) -> None:
     pid_file = Path(run_dir) / "watcher.pid"
     if pid_file.exists():
-        os.kill(int(pid_file.read_text(encoding="utf-8").strip()), 15)
+        try:
+            os.kill(int(pid_file.read_text(encoding="utf-8").strip()), 15)
+        except ProcessLookupError:
+            pass  # already gone (reboot, crash); finalizing must still work
         pid_file.unlink()

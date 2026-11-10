@@ -253,6 +253,75 @@ class CliTests(unittest.TestCase):
             self.assertIn(flag, buf.getvalue())
 
 
+def codex(sec, kind, **payload):
+    return {"timestamp": ts(sec), "type": kind, "payload": payload}
+
+
+def codex_item(sec, turn, item_type, text):
+    item = {"type": item_type, "content": [{"type": "text", "text": text}]}
+    return codex(sec, "event_msg", type="item_completed", turn_id=turn, item=item)
+
+
+# Two turns; the first was sent before the hooks were loaded, so only the second has hook events.
+CODEX_ROLLOUT = [
+    codex(0, "session_meta", id="s", cwd="/w"),
+    codex(1, "event_msg", type="task_started", turn_id="t1"),
+    codex(1, "turn_context", turn_id="t1", model="gpt-test"),
+    codex_item(1, "t1", "UserMessage", "hi\n"),
+    codex(1, "response_item", type="message", role="user", content=[{"type": "input_text", "text": "<environment_context>"}]),
+    codex_item(2, "t1", "AgentMessage", "Hello!"),
+    codex(2, "token_usage_record", turn_id="t1", usage={"input_tokens": 100, "cached_input_tokens": 60, "output_tokens": 5}),
+    codex(10, "event_msg", type="task_started", turn_id="t2"),
+    codex(10, "turn_context", turn_id="t2", model="gpt-test"),
+    codex_item(10, "t2", "UserMessage", "list the files"),
+    codex(11, "response_item", type="function_call", name="exec_command", arguments='{"cmd": "ls"}'),
+    codex(12, "token_usage_record", turn_id="t2", usage={"input_tokens": 200, "cached_input_tokens": 0, "output_tokens": 9}),
+    codex_item(13, "t2", "AgentMessage", "One file."),
+]
+
+
+class CodexTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.run_dir = root / "runs" / "20261102-100000-demo"
+        self.run_dir.mkdir(parents=True)
+        rollout = root / "rollout.jsonl"
+        rollout.write_text("\n".join(json.dumps(e) for e in CODEX_ROLLOUT), encoding="utf-8")
+        save_manifest(RunManifest(run_id=self.run_dir.name, name="demo", agent="codex", access="medium",
+                                  workspace=str(root), run_dir=str(self.run_dir)))
+        payload = {"transcript_path": str(rollout), "turn_id": "t2"}
+        for e in (
+            hook("user_prompt", 10, payload={"prompt": "list the files", **payload}),
+            hook("pre_tool_use", 11, tool_name="Bash", tool_use_id="c1", payload={"tool_input": {"command": "ls"}}),
+            hook("post_tool_use", 12, tool_name="Bash", tool_use_id="c1"),
+            hook("stop", 14, payload=payload),
+        ):
+            append_jsonl(self.run_dir / "events.jsonl", e)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_rollout_gives_text_model_and_tokens(self):
+        rec = record_from_run(self.run_dir)
+        self.assertEqual(rec.source.model, "gpt-test")
+        self.assertEqual([t.text for t in rec.turns], ["hi", "Hello!", "list the files", "One file."])
+        self.assertTrue(all(v == "auto" for v in rec.provenance.values()))
+
+    def test_turns_missed_by_hooks_are_kept_and_tool_calls_land_in_their_turn(self):
+        m = build_metrics(self.run_dir)
+        self.assertEqual(m.turns, 2)
+        self.assertEqual(m.human_prompts, 2)
+        self.assertEqual([t.tool_calls for t in m.turn_records], [0, 1])
+
+    def test_cached_tokens_are_split_out_of_input(self):
+        m = build_metrics(self.run_dir)
+        self.assertEqual(m.tokens.input_tokens, 240)
+        self.assertEqual(m.tokens.cache_read_input_tokens, 60)
+        self.assertEqual(m.tokens.output_tokens, 14)
+        self.assertEqual(m.assistant_messages, 2)
+
+
 class RoundTripTests(unittest.TestCase):
     def test_write_record_then_load(self):
         with tempfile.TemporaryDirectory() as d:

@@ -22,14 +22,14 @@ This gives you a `harness` command (`.venv/bin/harness`). Run it from the folder
 harness init --scenario A --run A01 --framing neutral
 ```
 
-It prints a launch command (or a `launch.sh` path). Start the agent yourself with that, from another terminal, and use it as normal. Hooks installed by `init` report what happens to the harness. When you are done:
+It prints a launch command (`open -a Claude`, or `open -b com.openai.codex`, the ChatGPT app, with `--agent codex`). That opens the desktop app; start a session there on the folder you ran `init` in (Claude: the Code tab; Codex: trust the project when asked, or its config and hooks are not loaded), and use it as normal. Hooks installed by `init` report what happens to the harness, and `--access` is written to the same project config, since the apps take no flags. When you are done:
 
 ```bash
 harness finalize latest      # writes record.json (and metrics.json, summary.md)
 harness annotate latest
 ```
 
-`init` writes hook settings into the folder you are in (`.claude/settings.local.json`); `finalize` puts the original back. Use a scratch folder, not your real project.
+`init` writes hook and permission settings into the folder you are in (`.claude/settings.local.json`, or `.codex/hooks.json` and `.codex/config.toml`); `finalize` puts the originals back. Use a scratch folder, not your real project.
 
 ## 2. Shareable link or pasted text
 
@@ -102,5 +102,5 @@ tests/                 python -m unittest discover -s tests
 
 - Only ChatGPT links are fetched automatically; other platforms need the text route.
 - Messages with images or code-interpreter output are not captured from ChatGPT links; reasoning summaries are skipped.
-- The local-agent path has been run live for chat only (no tool calls yet), and only with Claude Code in a terminal.
+- The local-agent path has been run live for chat only (no tool calls yet), and only with Claude Code in a terminal, not yet with the desktop apps.
 - Nothing yet collects many runs into one table.
