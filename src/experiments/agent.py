@@ -122,6 +122,11 @@ def codex_permission_lines(access: str) -> list[str]:
 # Bundle ids outlast app names: Codex ships inside the app named "ChatGPT".
 DESKTOP_APPS = {"claude": "com.anthropic.claudefordesktop", "codex": "com.openai.codex"}
 
+# Chat modes keep the conversation on the provider's servers: no hooks, no local
+# transcript. The run is filled at finalize from a share link or pasted text.
+# Maps the agent to the record's platform name.
+CHAT_AGENTS = {"chatgpt": "chatgpt", "claude-chat": "claude.ai"}
+
 
 def find_app(bundle_id: str) -> str | None:
     """Path of an installed macOS app, found by bundle id through Spotlight."""
@@ -138,6 +143,7 @@ def find_app(bundle_id: str) -> str | None:
 def launch_command(manifest: "RunManifest", workspace: str | Path) -> str:
     # The desktop apps take no flags: open the workspace folder in the app. The
     # access level is written to the project config next to the hooks instead.
-    if manifest.agent == "codex":
+    # chatgpt and codex are modes of the same app, as are claude-chat and claude
+    if manifest.agent in {"codex", "chatgpt"}:
         return f"open -b {DESKTOP_APPS['codex']}"
     return "open -a Claude"

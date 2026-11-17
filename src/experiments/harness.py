@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .agent import (
+    CHAT_AGENTS,
     CLAUDE_PERMISSION,
     codex_config_path,
     codex_permission_lines,
@@ -126,8 +127,9 @@ class RunManifest(BaseModel):
     # Experiment design fields given to `init` (scenario, framing, ...); the
     # allowed keys are the fields of record.Experiment.
     experiment: dict[str, str] = Field(default_factory=dict)
-    # "hooks": captured live from an agent; "import": built from a transcript by `harness import`.
-    source_kind: Literal["hooks", "import"] = "hooks"
+    # "hooks": captured live from an agent; "import": built from a transcript by `harness import`;
+    # "chat": a desktop chat mode, filled at `finalize` from a share link or pasted text.
+    source_kind: Literal["hooks", "import", "chat"] = "hooks"
 
     hook_settings_path: str | None = None
     hook_backup_path: str | None = None
@@ -632,7 +634,7 @@ def create_run(
     name: str | None = None,
     experiment: dict[str, str] | None = None,
 ) -> RunManifest:
-    """Prepare a run in the current directory: hooks and a launch command.
+    """Prepare a run in the current directory: hooks (not for chat modes) and a launch command.
 
     The agent works in the directory the harness was launched from; the harness
     never launches anything itself.
@@ -649,8 +651,10 @@ def create_run(
         workspace=str(workspace),
         run_dir=str(run_dir),
         experiment=experiment or {},
+        source_kind="chat" if agent in CHAT_AGENTS else "hooks",
     )
-    _install_hooks(manifest)
+    if manifest.source_kind == "hooks":
+        _install_hooks(manifest)
 
     manifest.launch_command = launch_command(manifest, workspace)
     script = run_dir / "launch.sh"

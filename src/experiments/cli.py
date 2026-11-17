@@ -36,7 +36,7 @@ from .harness import (
     summary_markdown,
     write_metrics,
 )
-from .importer import create_imported_run, turn_warnings, write_imported_run
+from .importer import create_imported_run, finish_chat_run, turn_warnings, write_imported_run
 from .record import Experiment
 
 
@@ -61,7 +61,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("init", help="Prepare a run: hooks, manifest, launch command.")
-    p.add_argument("--agent", choices=["claude", "codex"], default="claude")
+    p.add_argument(
+        "--agent",
+        choices=["claude", "codex", "chatgpt", "claude-chat"],
+        default="claude",
+        help="claude: Claude app, Code tab. codex: ChatGPT app, Codex or Work mode. "
+        "chatgpt / claude-chat: the apps' chat modes, filled at finalize from a share link or pasted text.",
+    )
     p.add_argument("--access", choices=["low", "medium", "high"], default="medium")
     p.add_argument("--count", type=int, default=1, help="Create N runs.")
     p.add_argument("--no-watch", action="store_true", help="Don't start the background watcher.")
@@ -128,6 +134,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("finalize", help="Compute final metrics, write the record, restore hooks.")
     p.add_argument("run")
     p.add_argument("--no-diff", action="store_true")
+    p.add_argument("--url", help="Chat runs: the chat's share link (fetched for ChatGPT; recorded with --file).")
+    p.add_argument("--file", help="Chat runs: the chat's copied text, or - for stdin.")
     p.set_defaults(handler=_cmd_finalize)
 
     p = sub.add_parser("doctor", help="Check the environment and the agent desktop apps.")
@@ -198,7 +206,7 @@ def _cmd_init(args) -> int:
     experiment = _experiment_from(args)
     for _ in range(args.count):
         manifest = create_run(agent=args.agent, access=args.access, experiment=experiment)
-        if not args.no_watch:
+        if not args.no_watch and manifest.source_kind == "hooks":  # a chat run has nothing to watch
             spawn_watcher(manifest.run_dir)
         created.append(manifest)
 
@@ -210,6 +218,9 @@ def _cmd_init(args) -> int:
 
 
 def _print_run_banner(manifest) -> None:
+    if manifest.source_kind == "chat":
+        _print_chat_banner(manifest)
+        return
     print()
     print(f"run        {manifest.run_id}")
     print(f"run dir    {manifest.run_dir}")
@@ -226,6 +237,26 @@ def _print_run_banner(manifest) -> None:
     print(f"    harness watch {manifest.run_id}")
     print("When finished:")
     print(f"    harness finalize {manifest.run_id}")
+    print()
+
+
+def _print_chat_banner(manifest) -> None:
+    app, mode = ("ChatGPT", "Chat") if manifest.agent == "chatgpt" else ("Claude", "Chat")
+    print()
+    print(f"run        {manifest.run_id}")
+    print(f"run dir    {manifest.run_dir}")
+    print()
+    print(f"Open the {app} app, switch it to {mode}, and start a new chat:")
+    print()
+    print(f"    {manifest.launch_command}")
+    print()
+    print("Chat mode has no hooks, so nothing is recorded live. When finished:")
+    if manifest.agent == "chatgpt":
+        print(f"    harness finalize {manifest.run_id} --url <the chat's share link>")
+        print("or, with the chat's text copied into a file:")
+    else:
+        print("copy the chat into a file ('User:' / 'Assistant:' lines), then:")
+    print(f"    harness finalize {manifest.run_id} --file chat.txt [--url <share link>]")
     print()
 
 
@@ -317,6 +348,10 @@ def _report_record(run_dir: Path, record) -> None:
 
 def _cmd_finalize(args) -> int:
     run_dir = resolve_run(args.run)
+    if load_manifest(run_dir).source_kind == "chat":
+        return _finalize_chat(run_dir, args)
+    if args.url or args.file:
+        raise ValueError("--url and --file are for chat runs (--agent chatgpt or claude-chat)")
     stop_watcher(run_dir)
     metrics = finalize_run(run_dir.name, capture_diff=not args.no_diff)
     record = write_record(run_dir)
@@ -326,6 +361,20 @@ def _cmd_finalize(args) -> int:
     print(f"  summary  {run_dir / 'summary.md'}")
     if metrics.diff and metrics.diff.patch_path:
         print(f"  diff     {metrics.diff.patch_path}")
+    return 0
+
+
+def _finalize_chat(run_dir: Path, args) -> int:
+    text = None
+    if args.file:
+        text = sys.stdin.read() if args.file == "-" else Path(args.file).read_text(encoding="utf-8-sig")
+    record = finish_chat_run(run_dir, text=text, url=args.url)
+    print(f"finalized {run_dir.name}")
+    _report_record(run_dir, record)
+    print(f"  roles    {' '.join(t.role[0].upper() for t in record.turns)}   (U = user, A = assistant)")
+    for warning in turn_warnings(record):
+        print(f"  warning: {warning}")
+    print(f"Annotate with:  harness annotate {run_dir.name}")
     return 0
 
 

@@ -8,6 +8,7 @@ this module only reshapes that into ``record.json`` and notes, in
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -15,6 +16,20 @@ from .harness import TRANSCRIPT_SNAPSHOT, ToolCall, build_metrics, load_events, 
 from .record import Experiment, Record, Source, ToolCallRecord, TurnRecord, save_record
 
 PLATFORMS = {"claude": "claude-code", "codex": "codex-desktop"}
+
+
+def _codex_originator(transcript: Path | None) -> str | None:
+    """The client a Codex rollout names in its first line, e.g. "codex_work_desktop"
+    for the ChatGPT app's Work mode. It is what tells Work and Codex mode apart."""
+    if not transcript or not transcript.is_file():
+        return None
+    with open(transcript, encoding="utf-8") as f:
+        first = f.readline()
+    try:
+        meta = json.loads(first)
+    except ValueError:
+        return None
+    return (meta.get("payload") or {}).get("originator") if meta.get("type") == "session_meta" else None
 
 
 def _tool_call(call: ToolCall) -> ToolCallRecord:
@@ -68,7 +83,7 @@ def record_from_run(run_dir: str | Path) -> Record:
         experiment=Experiment(**manifest.experiment),
         source=Source(
             kind="hooks",
-            platform=PLATFORMS.get(manifest.agent, manifest.agent),
+            platform=(manifest.agent == "codex" and _codex_originator(snapshot_file)) or PLATFORMS.get(manifest.agent, manifest.agent),
             model=metrics.model,
             snapshot_path=TRANSCRIPT_SNAPSHOT if snapshot_file.is_file() else None,
         ),

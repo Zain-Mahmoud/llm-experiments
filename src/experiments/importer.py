@@ -11,7 +11,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .harness import RunManifest, iso, make_run_dir, save_manifest
+from .agent import CHAT_AGENTS
+from .chatgpt_share import import_share_link, is_share_url
+from .harness import RunManifest, iso, load_manifest, make_run_dir, save_manifest
 from .record import Experiment, Record, Source, TurnRecord, save_record
 
 SNAPSHOT_NAME = "source.txt"
@@ -120,3 +122,31 @@ def write_imported_run(record: Record, name: str, snapshot: str) -> Path:
     )
     save_record(run_dir, record)
     return run_dir
+
+
+def finish_chat_run(run_dir: str | Path, *, text: str | None = None, url: str | None = None) -> Record:
+    """Fill a chat-mode run made by `init` from what the chat left behind: a ChatGPT
+    share link (fetched), or the chat's copied text (with its link, if any, recorded)."""
+    run_dir = Path(run_dir)
+    manifest = load_manifest(run_dir)
+    if manifest.source_kind != "chat":
+        raise ValueError(f"{manifest.run_id} is not a chat run; --url and --file are for chatgpt and claude-chat runs")
+    platform = CHAT_AGENTS[manifest.agent]
+    if text is not None:
+        record, _ = import_transcript(text, experiment=manifest.experiment, platform=platform, url=url)
+        snapshot = text
+    elif url and is_share_url(url) and platform == "chatgpt":
+        record, _, snapshot, _ = import_share_link(url, manifest.experiment)
+    else:
+        # claude.ai share links sit behind a bot check, so they cannot be downloaded
+        raise ValueError(
+            "copy the chat into a file and pass it with --file (labels 'User:' / 'Assistant:'), "
+            "adding --url to record the share link"
+            + ("; only ChatGPT share links can be fetched on their own" if url else "")
+        )
+    record.run_id = manifest.run_id
+    (run_dir / (record.source.snapshot_path or SNAPSHOT_NAME)).write_text(snapshot, encoding="utf-8")
+    save_record(run_dir, record)
+    manifest.status, manifest.ended_at = "finished", iso()
+    save_manifest(manifest)
+    return record
