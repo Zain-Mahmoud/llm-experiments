@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -824,9 +825,13 @@ def spawn_watcher(run_dir: str | Path) -> int:
 
 def stop_watcher(run_dir: str | Path) -> None:
     pid_file = Path(run_dir) / "watcher.pid"
-    if pid_file.exists():
-        try:
-            os.kill(int(pid_file.read_text(encoding="utf-8").strip()), 15)
-        except ProcessLookupError:
-            pass  # already gone (reboot, crash); finalizing must still work
-        pid_file.unlink()
+    if not pid_file.exists():
+        return
+    try:
+        os.kill(int(pid_file.read_text(encoding="utf-8").strip()), signal.SIGTERM)
+    except (OSError, ValueError):
+        # Already gone (reboot, crash) or a stale/corrupt pid file. On Windows a
+        # dead pid raises OSError (WinError 87), not ProcessLookupError; either
+        # way, finalizing must still proceed and clear the pid file.
+        pass
+    pid_file.unlink(missing_ok=True)
