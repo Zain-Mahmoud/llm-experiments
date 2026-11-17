@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -9,6 +11,26 @@ if TYPE_CHECKING:
     from .harness import RunManifest
 
 HOOK_SCRIPT = Path(__file__).resolve().parent / "hook.py"
+
+
+def _hook_command(run_dir: str | Path, agent: str) -> str:
+    """Shell command the agent runs for each hook event.
+
+    Uses ``sys.executable`` (the interpreter running the harness) rather than a
+    bare ``python3``, which is often absent on Windows, and quotes every argument
+    for the local shell: ``list2cmdline`` for cmd.exe, ``shlex.join`` for POSIX.
+    """
+    parts = [
+        sys.executable,
+        str(HOOK_SCRIPT),
+        "--run-dir",
+        str(run_dir),
+        "--source",
+        agent,
+    ]
+    if os.name == "nt":
+        return subprocess.list2cmdline(parts)
+    return shlex.join(parts)
 
 CLAUDE_PERMISSION = {
     "low": "default",
@@ -73,10 +95,7 @@ def hook_config(agent: str, run_dir: str | Path) -> dict:
     """Hook definitions the agent reads, pointing back at our forwarder."""
     events = CODEX_HOOK_EVENTS if agent == "codex" else CLAUDE_HOOK_EVENTS
     tool_events = CODEX_TOOL_EVENTS if agent == "codex" else CLAUDE_TOOL_EVENTS
-    command = (
-        f"python3 {shlex.quote(str(HOOK_SCRIPT))} "
-        f"--run-dir {shlex.quote(str(run_dir))} --source {agent}"
-    )
+    command = _hook_command(run_dir, agent)
     hooks = {}
     for event in events:
         group = {"hooks": [{"type": "command", "command": command, "timeout": 30}]}
