@@ -2,13 +2,14 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from experiments import agent as agent_module
-from experiments.agent import launch_command
+from experiments.agent import app_name, launch_command
 from experiments.capture import record_from_run
 from experiments.cli import main
 from experiments.harness import RunManifest, append_jsonl, load_manifest, save_manifest
@@ -20,7 +21,9 @@ from test_chatgpt_share import NODES, URL, conversation, page
 CHAT = "User: hello there\nAssistant: Hi! How can I help?\nUser: what is 2+2\nAssistant: 4\n"
 
 
-class ChatRunTests(unittest.TestCase):
+class ChatRunCase(unittest.TestCase):
+    """Shared setup and helpers for tests that run `init` and `finalize` in a temporary folder."""
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name).resolve()
@@ -39,6 +42,8 @@ class ChatRunTests(unittest.TestCase):
             code = main(["finalize", run_dir.name, *flags])
         return code, err.getvalue()
 
+
+class ChatRunTests(ChatRunCase):
     def test_init_installs_no_hooks_and_starts_no_watcher(self):
         run_dir, out = self.init("claude-chat")
         manifest = load_manifest(run_dir)
@@ -95,6 +100,78 @@ class ChatRunTests(unittest.TestCase):
         self.assertIn("for chat runs", err)
 
 
+GEMINI_CHAT = "You said:\nhello there\nGemini said:\nHi! How can I help?\nYou said:\nwhat is 2+2\nGemini said:\n4\n"
+DEEPSEEK_CHAT = "User: hello there\nDeepSeek: Hi! How can I help?\nUser: what is 2+2\nDeepSeek: 4\n"
+
+
+class WebsiteChatTests(ChatRunCase):
+    """Gemini and DeepSeek are websites with no hooks and no downloadable share link: pasted text."""
+
+    def test_init_opens_the_website_and_installs_no_hooks(self):
+        for agent, site, name in (("gemini-chat", "https://gemini.google.com/app", "Gemini"),
+                                  ("deepseek-chat", "https://chat.deepseek.com", "DeepSeek")):
+            with self.subTest(agent):
+                run_dir, out = self.init(agent)
+                manifest = load_manifest(run_dir)
+                self.assertEqual((manifest.source_kind, manifest.hook_settings_path), ("chat", None))
+                self.assertEqual(manifest.launch_command, f'open "{site}"')
+                self.assertFalse((self.root / ".claude").exists())
+                self.assertIn(f"Open the {name} website with this, then start a new chat", out)
+                self.assertNotIn("switch it to", out)
+                self.assertIn("--file chat.txt", out)
+                shutil.rmtree(self.root / "runs")
+
+    def test_gemini_text_in_its_own_labels(self):
+        run_dir, _ = self.init("gemini-chat")
+        (self.root / "chat.txt").write_text(GEMINI_CHAT, encoding="utf-8")
+        self.assertEqual(self.finalize(run_dir, "--file", "chat.txt")[0], 0)
+        rec = load_record(run_dir)
+        self.assertEqual(rec.source.platform, "gemini")
+        self.assertEqual([t.role for t in rec.turns], ["user", "assistant", "user", "assistant"])
+        self.assertEqual(rec.turns[3].text, "4")
+
+    def test_deepseek_replies_are_not_folded_into_the_question(self):
+        # "DeepSeek:" was once not a speaker, so a whole chat became one user turn without a warning
+        run_dir, _ = self.init("deepseek-chat")
+        (self.root / "chat.txt").write_text(DEEPSEEK_CHAT, encoding="utf-8")
+        self.assertEqual(self.finalize(run_dir, "--file", "chat.txt")[0], 0)
+        rec = load_record(run_dir)
+        self.assertEqual(rec.source.platform, "deepseek")
+        self.assertEqual([t.role for t in rec.turns], ["user", "assistant", "user", "assistant"])
+        self.assertEqual((rec.experiment.scenario, rec.experiment.run), ("A", "A01"))
+
+    def test_a_link_alone_asks_for_the_text_and_nothing_is_fetched(self):
+        for agent, link in (("deepseek-chat", "https://chat.deepseek.com/share/abc"),
+                            ("gemini-chat", "https://gemini.google.com/share/abc")):
+            with self.subTest(agent):
+                run_dir, _ = self.init(agent)
+                with mock.patch("experiments.chatgpt_share.fetch_html", side_effect=AssertionError("fetched")):
+                    code, err = self.finalize(run_dir, "--url", link)
+                self.assertEqual(code, 1)
+                self.assertIn("--file", err)
+                self.assertFalse((run_dir / "record.json").exists())
+                shutil.rmtree(self.root / "runs")
+
+    def test_the_link_is_recorded_next_to_the_text(self):
+        run_dir, _ = self.init("deepseek-chat")
+        (self.root / "chat.txt").write_text(DEEPSEEK_CHAT, encoding="utf-8")
+        link = "https://chat.deepseek.com/share/abc"
+        self.assertEqual(self.finalize(run_dir, "--file", "chat.txt", "--url", link)[0], 0)
+        self.assertEqual(load_record(run_dir).source.url, link)
+
+    def test_the_error_for_a_hooked_run_names_every_chat_mode(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["init", "--agent", "claude", "--no-watch"])
+        code, err = self.finalize(next((self.root / "runs").iterdir()), "--file", "chat.txt")
+        self.assertEqual(code, 1)
+        for agent in ("chatgpt", "claude-chat", "gemini-chat", "deepseek-chat"):
+            self.assertIn(agent, err)
+
+    def test_app_names(self):
+        self.assertEqual([app_name(a) for a in ("gemini-chat", "deepseek-chat", "chatgpt", "claude-chat")],
+                         ["Gemini", "DeepSeek", "ChatGPT", "Claude"])
+
+
 class LaunchTests(unittest.TestCase):
     def launch(self, agent, os_name):
         manifest = RunManifest(run_id="r", name="r", agent=agent, access="medium", workspace=".", run_dir=".")
@@ -105,6 +182,12 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(self.launch("codex", "posix"), "open -b com.openai.codex")
         self.assertEqual(self.launch("chatgpt", "posix"), "open -b com.openai.codex")
         self.assertEqual(self.launch("claude-chat", "posix"), "open -a Claude")
+
+    def test_websites_open_in_the_browser(self):
+        self.assertEqual(self.launch("gemini-chat", "posix"), 'open "https://gemini.google.com/app"')
+        self.assertEqual(self.launch("deepseek-chat", "posix"), 'open "https://chat.deepseek.com"')
+        self.assertEqual(self.launch("gemini-chat", "nt"), 'start "" "https://gemini.google.com/app"')
+        self.assertEqual(self.launch("deepseek-chat", "nt"), 'start "" "https://chat.deepseek.com"')
 
     def test_windows_uses_claude_links_and_has_no_chatgpt_command(self):
         self.assertEqual(self.launch("claude", "nt"), 'start "" "claude://claude.ai/new"')

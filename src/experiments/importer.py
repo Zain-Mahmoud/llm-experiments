@@ -21,7 +21,7 @@ SNAPSHOT_NAME = "source.txt"
 # Speaker labels, normalised to a role. "You said:" / "ChatGPT said:" are what
 # copying a ChatGPT page gives; "User:" / "Assistant:" is the usual Markdown form.
 USER_LABELS = {"user", "you", "human"}
-ASSISTANT_LABELS = {"assistant", "claude", "chatgpt", "gemini"}
+ASSISTANT_LABELS = {"assistant", "claude", "chatgpt", "gemini", "deepseek"}
 TURN_RE = re.compile(
     r"^\s*(?:#{1,6}\s*)?\**(" + "|".join(sorted(USER_LABELS | ASSISTANT_LABELS)) + r")(?:\s+said)?\**\s*:\s*\**\s*(.*)$",
     re.IGNORECASE,
@@ -130,7 +130,7 @@ def finish_chat_run(run_dir: str | Path, *, text: str | None = None, url: str | 
     run_dir = Path(run_dir)
     manifest = load_manifest(run_dir)
     if manifest.source_kind != "chat":
-        raise ValueError(f"{manifest.run_id} is not a chat run; --url and --file are for chatgpt and claude-chat runs")
+        raise ValueError(f"{manifest.run_id} is not a chat run; --url and --file are for {', '.join(CHAT_AGENTS)} runs")
     platform = CHAT_AGENTS[manifest.agent]
     if text is not None:
         record, _ = import_transcript(text, experiment=manifest.experiment, platform=platform, url=url)
@@ -138,7 +138,8 @@ def finish_chat_run(run_dir: str | Path, *, text: str | None = None, url: str | 
     elif url and is_share_url(url) and platform == "chatgpt":
         record, _, snapshot, _ = import_share_link(url, manifest.experiment)
     else:
-        # claude.ai share links sit behind a bot check, so they cannot be downloaded
+        # The other sites cannot be downloaded: claude.ai sits behind a bot check, DeepSeek answers a
+        # plain request with an empty challenge page, and a Gemini conversation needs a login.
         raise ValueError(
             "copy the chat into a file and pass it with --file (labels 'User:' / 'Assistant:'), "
             "adding --url to record the share link"

@@ -58,6 +58,10 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(turns, [("user", "hello there"), ("assistant", "Hi! How can I help?"),
                                  ("user", "what is 2+2"), ("assistant", "4")])
 
+    def test_deepseek_and_gemini_labels(self):
+        self.assertEqual(parse_transcript_text("User: hi\nDeepSeek: yo"), [("user", "hi"), ("assistant", "yo")])
+        self.assertEqual(parse_transcript_text("You said:\nhi\nGemini said:\nyo"), [("user", "hi"), ("assistant", "yo")])
+
     def test_windows_line_endings(self):
         turns = parse_transcript_text(MARKDOWN.replace("\n", "\r\n"))
         self.assertEqual(len(turns), 4)
