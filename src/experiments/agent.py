@@ -125,7 +125,13 @@ DESKTOP_APPS = {"claude": "com.anthropic.claudefordesktop", "codex": "com.openai
 # Chat modes keep the conversation on the provider's servers: no hooks, no local
 # transcript. The run is filled at finalize from a share link or pasted text.
 # Maps the agent to the record's platform name.
-CHAT_AGENTS = {"chatgpt": "chatgpt", "claude-chat": "claude.ai"}
+CHAT_AGENTS = {"chatgpt": "chatgpt", "claude-chat": "claude.ai", "gemini-chat": "gemini", "deepseek-chat": "deepseek"}
+
+# Chat modes that are websites, not desktop apps: name and the page that starts a chat.
+CHAT_WEBSITES = {
+    "gemini-chat": ("Gemini", "https://gemini.google.com/app"),
+    "deepseek-chat": ("DeepSeek", "https://chat.deepseek.com"),
+}
 
 
 def find_app(bundle_id: str) -> str | None:
@@ -151,6 +157,9 @@ def launch_command(manifest: "RunManifest", workspace: str | Path) -> str | None
     the access level is written to the project config next to the hooks instead.
     chatgpt and codex are modes of the same app, as are claude-chat and claude.
     """
+    if manifest.agent in CHAT_WEBSITES:
+        url = CHAT_WEBSITES[manifest.agent][1]
+        return f'start "" "{url}"' if os.name == "nt" else f'open "{url}"'
     chatgpt_app = manifest.agent in {"codex", "chatgpt"}
     if os.name == "nt":
         # Claude documents claude:// links for its Windows app; the ChatGPT app
@@ -162,4 +171,6 @@ def launch_command(manifest: "RunManifest", workspace: str | Path) -> str | None
 
 
 def app_name(agent: str) -> str:
+    if agent in CHAT_WEBSITES:
+        return CHAT_WEBSITES[agent][0]
     return "ChatGPT" if agent in {"codex", "chatgpt"} else "Claude"

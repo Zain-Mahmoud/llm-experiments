@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .agent import DESKTOP_APPS, app_name, find_app
+from .agent import CHAT_AGENTS, CHAT_WEBSITES, DESKTOP_APPS, app_name, find_app
 from .annotate import open_page
 from .capture import write_record
 from .chatgpt_share import import_share_link, is_share_url
@@ -63,10 +63,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("init", help="Prepare a run: hooks, manifest, launch command.")
     p.add_argument(
         "--agent",
-        choices=["claude", "codex", "chatgpt", "claude-chat"],
+        choices=["claude", "codex", "chatgpt", "claude-chat", "gemini-chat", "deepseek-chat"],
         default="claude",
         help="claude: Claude app, Code tab. codex: ChatGPT app, Codex or Work mode. "
-        "chatgpt / claude-chat: the apps' chat modes, filled at finalize from a share link or pasted text.",
+        "chatgpt / claude-chat: the apps' chat modes, filled at finalize from a share link or pasted text. "
+        "gemini-chat / deepseek-chat: the websites, filled at finalize from pasted text.",
     )
     p.add_argument("--access", choices=["low", "medium", "high"], default="medium")
     p.add_argument("--count", type=int, default=1, help="Create N runs.")
@@ -237,14 +238,15 @@ def _print_run_banner(manifest) -> None:
 
 def _print_launch(manifest, then: str) -> None:
     app = app_name(manifest.agent)
+    noun = "website" if manifest.agent in CHAT_WEBSITES else "app"
     if manifest.launch_command:
-        print(f"Open the {app} app with this, {then}:")
+        print(f"Open the {app} {noun} with this, {then}:")
         print()
         print(f"    {manifest.launch_command}")
         print()
         print(f"or:  {manifest.launch_script}")
     else:
-        print(f"Open the {app} app from the Start menu, {then}.")
+        print(f"Open the {app} {noun} from the Start menu, {then}.")
     print()
 
 
@@ -254,7 +256,8 @@ def _print_chat_banner(manifest) -> None:
     print(f"run        {manifest.run_id}")
     print(f"run dir    {manifest.run_dir}")
     print()
-    _print_launch(manifest, f"then switch it to {mode} and start a new chat")
+    _print_launch(manifest, "then start a new chat" if manifest.agent in CHAT_WEBSITES
+                  else f"then switch it to {mode} and start a new chat")
     print("Chat mode has no hooks, so nothing is recorded live. When finished:")
     if manifest.agent == "chatgpt":
         print(f"    harness finalize {manifest.run_id} --url <the chat's share link>")
@@ -356,7 +359,7 @@ def _cmd_finalize(args) -> int:
     if load_manifest(run_dir).source_kind == "chat":
         return _finalize_chat(run_dir, args)
     if args.url or args.file:
-        raise ValueError("--url and --file are for chat runs (--agent chatgpt or claude-chat)")
+        raise ValueError(f"--url and --file are for chat runs (--agent {', '.join(CHAT_AGENTS)})")
     stop_watcher(run_dir)
     metrics = finalize_run(run_dir.name, capture_diff=not args.no_diff)
     record = write_record(run_dir)

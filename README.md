@@ -24,6 +24,8 @@ This gives you a `harness` command (`.venv/bin/harness`). Run it from the folder
 | `codex` | ChatGPT, Codex or Work mode | live, through hooks; the record's platform says which mode |
 | `chatgpt` | ChatGPT, Chat mode | at `finalize`, from the share link or the copied text |
 | `claude-chat` | Claude, Chat mode | at `finalize`, from the copied text (claude.ai share links cannot be downloaded) |
+| `gemini-chat` | Gemini website | at `finalize`, from the copied text |
+| `deepseek-chat` | DeepSeek website | at `finalize`, from the copied text |
 
 ```bash
 harness init --scenario A --run A01 --framing neutral
@@ -45,7 +47,7 @@ harness finalize latest --url https://chatgpt.com/share/<id>              # Chat
 harness finalize latest --file chat.txt --url https://claude.ai/share/<id>  # copied text; the link is just recorded
 ```
 
-`chat.txt` uses the same `User:` / `Assistant:` lines as `harness import` below. A chat run has no tool inputs, token counts or live timing; its record marks them `unavailable`.
+`chat.txt` uses the same `User:` / `Assistant:` lines as `harness import` below. Gemini's `You said:` / `Gemini said:` and `DeepSeek:` lines are understood too. Only ChatGPT links can be downloaded. DeepSeek's share page answers a plain request with an empty page, and a Gemini `gemini.google.com/app/<id>` address is your private conversation, not a share link, so for both you pass the copied text and `--url` just records the link. A chat run has no tool inputs, token counts or live timing; its record marks them `unavailable`.
 
 `init` writes hook and permission settings into the folder you are in (`.claude/settings.local.json`, or `.codex/hooks.json` and `.codex/config.toml`); `finalize` puts the originals back. Use a scratch folder, not your real project.
 
