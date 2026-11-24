@@ -2,7 +2,7 @@
 
 Record experiments with AI assistants into one standard file, then annotate them.
 
-1. **Record a local agent session** (Claude Code / Codex). The harness listens while you use the agent.
+1. **Record a desktop app session.** Agent modes (Claude's Code tab, ChatGPT's Codex and Work modes) are recorded live; chat modes are filled in from a share link or the copied text when you finish.
 2. **Read a shareable link** (ChatGPT) or a pasted transcript (any platform).
 3. Both give the same `record.json`. **`harness annotate`** opens a page where you comment on turns, mark where the simulation ends, and set an outcome.
 
@@ -16,7 +16,14 @@ uv sync
 
 This gives you a `harness` command (`.venv/bin/harness`). Run it from the folder you want runs saved in: `runs/` is created there.
 
-## 1. Local agent
+## 1. Desktop app
+
+| `--agent` | App and mode | How it is recorded |
+| --- | --- | --- |
+| `claude` (default) | Claude, Code tab | live, through hooks |
+| `codex` | ChatGPT, Codex or Work mode | live, through hooks; the record's platform says which mode |
+| `chatgpt` | ChatGPT, Chat mode | at `finalize`, from the share link or the copied text |
+| `claude-chat` | Claude, Chat mode | at `finalize`, from the copied text (claude.ai share links cannot be downloaded) |
 
 ```bash
 harness init --scenario A --run A01 --framing neutral
@@ -28,6 +35,17 @@ It prints a launch command (`open -a Claude`, or `open -b com.openai.codex`, the
 harness finalize latest      # writes record.json (and metrics.json, summary.md)
 harness annotate latest
 ```
+
+On Windows the harness is `.venv\Scripts\harness.exe`. For Claude, `init` prints `start "" "claude://claude.ai/new"`; the ChatGPT app has no documented launch command, so open it from the Start menu. Either way, open the folder you ran `init` in as the project.
+
+For a chat mode, `init` only creates the run and prints how to open the app; switch the app to Chat and start a new chat. When you are done:
+
+```bash
+harness finalize latest --url https://chatgpt.com/share/<id>              # ChatGPT: fetched
+harness finalize latest --file chat.txt --url https://claude.ai/share/<id>  # copied text; the link is just recorded
+```
+
+`chat.txt` uses the same `User:` / `Assistant:` lines as `harness import` below. A chat run has no tool inputs, token counts or live timing; its record marks them `unavailable`.
 
 `init` writes hook and permission settings into the folder you are in (`.claude/settings.local.json`, or `.codex/hooks.json` and `.codex/config.toml`); `finalize` puts the originals back. Use a scratch folder, not your real project.
 

@@ -8,6 +8,7 @@ writes typed events tagged with a turn id; see ``parse_codex_rollout``.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,46 @@ def parse_transcript(path: str | Path) -> list[Entry]:
     if objs and objs[0].get("type") == "session_meta":
         return parse_codex_rollout(objs)
     return [parse_entry(obj) for obj in objs]
+
+
+def codex_sessions_dir() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
+
+
+def _same_dir(a: str, b: str) -> bool:
+    # realpath: /tmp vs /private/tmp on macOS; normcase: Windows paths ignore case;
+    # Windows may also write the extended-length form \\?\C:\...
+    def norm(p: str) -> str:
+        return os.path.normcase(os.path.realpath(p.removeprefix("\\\\?\\")))
+
+    return norm(a) == norm(b)
+
+
+def find_codex_rollout(workspace: str | Path, since: float, sessions: Path | None = None) -> Path | None:
+    """The latest Codex rollout written in ``workspace`` since ``since`` (a Unix time).
+
+    Codex writes this file whether or not hooks run, so it identifies a session
+    the hooks never reported (Codex Desktop on Windows may not run project hooks).
+    """
+    root = sessions or codex_sessions_dir()
+    if not root.is_dir():
+        return None
+    best: tuple[float, Path] | None = None
+    for path in root.rglob("rollout-*.jsonl"):
+        try:
+            mtime = path.stat().st_mtime
+            if mtime < since or (best and mtime <= best[0]):
+                continue
+            with open(path, encoding="utf-8") as f:
+                meta = json.loads(f.readline())
+        except (OSError, ValueError):
+            continue
+        cwd = (meta.get("payload") or {}).get("cwd") if meta.get("type") == "session_meta" else None
+        # Codex Desktop also writes an empty companion rollout per chat, often modified
+        # last; only a rollout with a prompt in it is the conversation.
+        if cwd and _same_dir(cwd, str(workspace)) and any(e.is_prompt for e in parse_transcript(path)):
+            best = (mtime, path)
+    return best[1] if best else None
 
 
 def _codex_usage(usage: dict[str, Any] | None) -> TokenUsage:

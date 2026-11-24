@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .agent import DESKTOP_APPS, find_app
+from .agent import DESKTOP_APPS, app_name, find_app
 from .annotate import open_page
 from .capture import write_record
 from .chatgpt_share import import_share_link, is_share_url
@@ -227,12 +227,7 @@ def _print_run_banner(manifest) -> None:
     print(f"workspace  {manifest.workspace}")
     print(f"hooks      {manifest.hook_settings_path}")
     print()
-    print("Launch the agent yourself with:")
-    print()
-    print(f"    {manifest.launch_command}")
-    print()
-    print(f"or:  {manifest.launch_script}")
-    print()
+    _print_launch(manifest, "then open this folder in it as the project")
     print("Monitor with:")
     print(f"    harness watch {manifest.run_id}")
     print("When finished:")
@@ -240,16 +235,26 @@ def _print_run_banner(manifest) -> None:
     print()
 
 
+def _print_launch(manifest, then: str) -> None:
+    app = app_name(manifest.agent)
+    if manifest.launch_command:
+        print(f"Open the {app} app with this, {then}:")
+        print()
+        print(f"    {manifest.launch_command}")
+        print()
+        print(f"or:  {manifest.launch_script}")
+    else:
+        print(f"Open the {app} app from the Start menu, {then}.")
+    print()
+
+
 def _print_chat_banner(manifest) -> None:
-    app, mode = ("ChatGPT", "Chat") if manifest.agent == "chatgpt" else ("Claude", "Chat")
+    mode = "Chat"
     print()
     print(f"run        {manifest.run_id}")
     print(f"run dir    {manifest.run_dir}")
     print()
-    print(f"Open the {app} app, switch it to {mode}, and start a new chat:")
-    print()
-    print(f"    {manifest.launch_command}")
-    print()
+    _print_launch(manifest, f"then switch it to {mode} and start a new chat")
     print("Chat mode has no hooks, so nothing is recorded live. When finished:")
     if manifest.agent == "chatgpt":
         print(f"    harness finalize {manifest.run_id} --url <the chat's share link>")
@@ -384,6 +389,9 @@ def _cmd_doctor(args) -> int:
     print(f"runs     {runs_dir()}")
     print()
     for name, bundle_id in DESKTOP_APPS.items():
+        if sys.platform != "darwin":
+            print(f"{name:<8} (not checked: app lookup only works on macOS)")
+            continue
         print(f"{name:<8} {find_app(bundle_id) or 'NOT FOUND'}")
     return 0
 

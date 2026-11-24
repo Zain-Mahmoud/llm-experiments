@@ -23,7 +23,7 @@ from .agent import (
     hook_settings_path,
     launch_command,
 )
-from .transcript import TokenUsage, parse_transcript, summarize
+from .transcript import TokenUsage, find_codex_rollout, parse_transcript, summarize
 
 RUNS_DIRNAME = "runs"
 TRANSCRIPT_SNAPSHOT = "transcript.jsonl"  # copy of the agent's transcript kept in the run dir
@@ -657,14 +657,19 @@ def create_run(
         _install_hooks(manifest)
 
     manifest.launch_command = launch_command(manifest, workspace)
-    script = run_dir / "launch.sh"
-    script.write_text(
-        "#!/usr/bin/env bash\nset -euo pipefail\n"
-        f"cd {shlex.quote(str(workspace))}\nexec {manifest.launch_command}\n",
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
-    manifest.launch_script = str(script)
+    if manifest.launch_command and os.name == "nt":
+        script = run_dir / "launch.cmd"
+        script.write_text(f'@echo off\r\ncd /d "{workspace}"\r\n{manifest.launch_command}\r\n', encoding="utf-8")
+        manifest.launch_script = str(script)
+    elif manifest.launch_command:
+        script = run_dir / "launch.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            f"cd {shlex.quote(str(workspace))}\nexec {manifest.launch_command}\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        manifest.launch_script = str(script)
 
     save_manifest(manifest)
     return manifest
@@ -773,6 +778,11 @@ def _transcript_path(manifest: RunManifest, events: list[Event]) -> str | None:
         (str(ev.payload["transcript_path"]) for ev in events if ev.payload.get("transcript_path")),
         None,
     )
+    if not path and manifest.agent == "codex":
+        # No hook reported the session; find it by the folder it ran in.
+        since = _parse_ts(manifest.created_at)
+        found = find_codex_rollout(manifest.workspace, since.timestamp()) if since else None
+        path = str(found) if found else None
     # The agent's own copy can be rotated or deleted; fall back to the snapshot kept in the run.
     snapshot = Path(manifest.run_dir) / TRANSCRIPT_SNAPSHOT
     if (not path or not Path(path).is_file()) and snapshot.is_file():

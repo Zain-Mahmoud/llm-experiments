@@ -129,7 +129,10 @@ CHAT_AGENTS = {"chatgpt": "chatgpt", "claude-chat": "claude.ai"}
 
 
 def find_app(bundle_id: str) -> str | None:
-    """Path of an installed macOS app, found by bundle id through Spotlight."""
+    """Path of an installed macOS app, found by bundle id through Spotlight.
+    None elsewhere: there is no equivalent lookup on Windows."""
+    if sys.platform != "darwin":
+        return None
     try:
         out = subprocess.run(
             ["mdfind", f"kMDItemCFBundleIdentifier == '{bundle_id}'"],
@@ -140,10 +143,23 @@ def find_app(bundle_id: str) -> str | None:
     return next((line for line in out.splitlines() if line.endswith(".app")), None)
 
 
-def launch_command(manifest: "RunManifest", workspace: str | Path) -> str:
-    # The desktop apps take no flags: open the workspace folder in the app. The
-    # access level is written to the project config next to the hooks instead.
-    # chatgpt and codex are modes of the same app, as are claude-chat and claude
-    if manifest.agent in {"codex", "chatgpt"}:
+def launch_command(manifest: "RunManifest", workspace: str | Path) -> str | None:
+    """Shell command that opens the agent's desktop app, or None when there is no
+    reliable one and the person opens it by hand.
+
+    The desktop apps take no flags: the workspace folder is chosen in the app, and
+    the access level is written to the project config next to the hooks instead.
+    chatgpt and codex are modes of the same app, as are claude-chat and claude.
+    """
+    chatgpt_app = manifest.agent in {"codex", "chatgpt"}
+    if os.name == "nt":
+        # Claude documents claude:// links for its Windows app; the ChatGPT app
+        # documents no launch command, so it is opened from the Start menu.
+        return None if chatgpt_app else 'start "" "claude://claude.ai/new"'
+    if chatgpt_app:
         return f"open -b {DESKTOP_APPS['codex']}"
     return "open -a Claude"
+
+
+def app_name(agent: str) -> str:
+    return "ChatGPT" if agent in {"codex", "chatgpt"} else "Claude"
